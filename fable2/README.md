@@ -2,11 +2,17 @@
 
 Xenia Canary with a Fable II profile, launcher and patch bundle.
 
+**What Fable II actually needs is one CPU-GPU synchronization per frame.**
+Without it the light behind foliage renders magenta and textures flicker. Both
+profiles ship `await_gpu_completion_per_frame = true`, which costs about 3-4 FPS.
+
 The old femtofork's selective-readback idea was ported, tested, and removed: its
 signature never matched this build, and readback does not fix the morph
-textures. What the investigation produced instead is general and stayed in —
-resolve logging, readback skip reporting, submission fences on the readback
-buffers, and a readback destination range filter.
+textures — `readback_resolve = "full"` looked like a fix only because of the
+stall it happened to cause, at roughly half the frame rate. The investigation's
+general leftovers stayed in: resolve logging, readback skip reporting,
+submission fences on the readback buffers, a readback destination range filter,
+and the per-frame sync itself.
 
 See [CONTEXT_HANDOFF.md](CONTEXT_HANDOFF.md) for the full investigation.
 
@@ -51,9 +57,9 @@ These modes use the same profile and shader cache, force VSync on, and apply
 the same enabled game patches:
 
 ```powershell
-.\fable2\run.ps1 -Mode A "D:\Games\Fable II.iso" # 2x + CAS, full readback
-.\fable2\run.ps1 -Mode B "D:\Games\Fable II.iso" # 1x + FSR, full readback
-.\fable2\run.ps1 -Mode C "D:\Games\Fable II.iso" # 2x + CAS, readback narrowed
+.\fable2\run.ps1 -Mode A "D:\Games\Fable II.iso" # 2x + CAS
+.\fable2\run.ps1 -Mode B "D:\Games\Fable II.iso" # 1x + FSR  <-- recommended
+.\fable2\run.ps1 -Mode C "D:\Games\Fable II.iso" # 2x + CAS, readback-range experiments
 ```
 
 **`-Mode B` is the recommended configuration: ~26-30 FPS, clean.** `-Mode A` is
@@ -106,11 +112,10 @@ game needs; both profiles already enable it, so these are only for testing.
 `-FramesInFlight 1 -SyncPerFrame false` is the cheaper variant worth trying —
 it waits for the previous frame instead of a full GPU idle.
 
-`-ReadbackRange` is a readback performance lever, no longer needed here. `full` readback is visually correct
-but costs about half the frame rate, and the cost scales with the *number* of
-resolves read back rather than their size — so restricting readback to the one
-region the guest actually reads should keep the correctness cheaply. The
-bisection list is in [CONTEXT_HANDOFF.md](CONTEXT_HANDOFF.md).
+`-Readback` and `-ReadbackRange` are no longer needed for this title — readback
+is off and the per-frame sync does the job. They remain useful for other
+titles: the cost of readback scales with the *number* of resolves read back
+rather than their size, which is what `-ReadbackRange` exploits.
 
 Overrides are applied after the mode defaults, and Xenia's parser takes the last
 occurrence of a flag, so `-Mode B -Sharpening bilinear` does override Mode B's
@@ -153,12 +158,13 @@ halo, so that bisect was never needed.
 
 1. Start with `-Mode A`. Check the opening, first outdoor area, hero
    adulthood/makeup, dog appearance, and the clothing menu.
-2. For wrong-colour effects or flicker, the first thing to check is
-   `-Readback full` — that is what fixed the foliage halo. Then
-   `-GammaAsUnorm16 false`, then `-RtPath rov` as the oracle.
-3. For frame rate, narrow the readback with `-ReadbackRange` rather than
-   turning it off.
-4. If 2x is too slow, use `-Mode B` (1x + FSR).
+2. For wrong-colour effects or flicker, check `-SyncPerFrame true` first —
+   that is what fixes the foliage halo. Then `-GammaAsUnorm16 false`, then
+   `-RtPath rov` as the oracle.
+3. For frame rate, try `-FramesInFlight 1 -SyncPerFrame false`, a cheaper way
+   to buy the same per-frame sync point.
+4. If 2x is too slow, use `-Mode B` (1x + FSR) — it is the recommended
+   configuration.
 
 Keep VSync, patches, and the test location unchanged during each comparison.
 
