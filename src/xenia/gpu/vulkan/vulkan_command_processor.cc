@@ -3062,11 +3062,17 @@ bool VulkanCommandProcessor::IssueCopy() {
     return false;
   }
 
-  LogFable2Resolve();
+  LogResolve();
 
   // CPU readback resolve path (if not disabled).
-  ReadbackResolveMode readback_mode = GetEffectiveReadbackResolveMode();
+  ReadbackResolveMode readback_mode = GetReadbackResolveMode();
   if (readback_mode == ReadbackResolveMode::kDisabled || !written_length) {
+    return true;
+  }
+
+  // Skip the readback for a resolve outside the configured region, leaving the
+  // resolve itself exactly as the readback-disabled path would have done it.
+  if (!IsReadbackResolveIncluded(written_address, written_length)) {
     return true;
   }
 
@@ -3506,8 +3512,6 @@ bool VulkanCommandProcessor::IssueCopy() {
         memory::vastcpy(memory_->TranslatePhysical(written_address),
                         static_cast<uint8_t*>(mapped_data), readback_length);
         dfn.vkUnmapMemory(device, rb.memories[read_index]);
-        ReportFable2SelectiveReadbackCompleted(written_address,
-                                               readback_length);
       } else {
         XELOGE(
             "VulkanCommandProcessor: Failed to map readback buffer memory for "

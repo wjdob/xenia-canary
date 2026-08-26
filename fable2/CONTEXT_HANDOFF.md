@@ -6,9 +6,10 @@ Status: Three rounds of instrumented gameplay testing are done. The femtofork
 selective readback never runs, and global readback does not fix the morph
 textures either. The foliage halo and the texture flicker are both explained by
 a guest-side feedback loop reading resolve results. `readback_resolve = "full"`
-produces a clean image at 2x; `fast` makes it strobe and `none` makes it
-constant. Correctness is settled - the open question is whether `full` is
-fast enough.
+is visually clean but costs half the frame rate (~10 FPS at 2x), and 1x barely
+helps - the cost is the number of sync stalls. A general readback destination
+range filter is now in; the open task is bisecting the region the guest
+actually reads.
 
 ## Start here
 
@@ -23,8 +24,12 @@ fast enough.
   sync, `full` is clean. The `selective` profile now ships `"full"`. CAS and
   `draw_resolution_scale_threshold` are both ruled out — the threshold makes it
   far worse and must never be revisited.
-- What is left is a **performance** question: no frame rate has been recorded
-  for any run yet.
+- `full` readback is clean but costs about half the frame rate, and 1x barely
+  helps, so the cost is the **number of stalls**. The fix is
+  `readback_resolve_range_start/length`, restricting readback to the region the
+  guest actually reads. `-Mode C` is the first candidate; bisect from there.
+- The femtofork selective-readback port has been **deleted**. No Fable-specific
+  code remains in `src/xenia/gpu`.
 - The additional enabled patches were added manually and intentionally. Do not
   revert them as accidental cleanup.
 - Work lives on branch `fable2-custom` and is committed.
@@ -257,29 +262,6 @@ of `"none"`. The `"none"` was chosen to make room for selective readback code
 that never executed, and it is the direct cause of the constant halo. A/B/C all
 inherit this, so a plain `-Mode A` is now the clean configuration.
 
-### Open question: is `full` affordable?
-
-`full` stalls the GPU on every resolve, and the resolve table showed well over a
-hundred distinct destinations. Correctness is settled; performance is not, and
-no frame rate has been recorded for any of these runs.
-
-Record into [UAT_RESULTS.md](UAT_RESULTS.md):
-
-```powershell
-.\fable2\run.ps1 -Mode A -Readback full -Quiet 'C:\Users\wdob\Desktop\Fable 2\Fable 2 PLT.iso'
-.\fable2\run.ps1 -Mode A -Readback fast -Quiet 'C:\Users\wdob\Desktop\Fable 2\Fable 2 PLT.iso'
-.\fable2\run.ps1 -Mode B -Readback full -Quiet 'C:\Users\wdob\Desktop\Fable 2\Fable 2 PLT.iso'
-```
-
-If 2x with `full` reaches roughly 30 FPS, the work is done: ship it and delete
-the selective machinery. If it does not, the useful optimisation is now clearly
-defined — most of those resolves are certainly never read by the CPU, so
-restricting `full` readback to the destination range that actually matters
-should recover most of the cost. That is what the existing selective code
-should have been: a **destination range filter**, general rather than
-title-specific, found by bisecting the address range rather than by copying a
-hard-coded constant from an old fork.
-
 ### Note: Xenia rewrites the profile TOMLs
 
 `SetupConfig` points `config_path` at the file passed to `--config`, and
@@ -287,6 +269,99 @@ hard-coded constant from an old fork.
 `config::SaveConfig()` on exit. So every run rewrites the profile: hex literals
 become decimal, and newly registered cvars are appended. Command-line overrides
 are *not* written back. Don't be surprised by a profile diff you didn't make.
+
+## Round 6: the cost is the stall count, not the pixels
+
+First frame rates recorded, all on the same route:
+
+| Run | FPS | Visuals |
+|---|---|---|
+| 2x, `-Readback full` | ~10 | clean |
+| 2x, `-Readback fast` | ~17 | halo + flicker |
+| 1x (`-Mode B`), `-Readback full` | ~13 | clean |
+| 2x, `readback none` (historical) | ~20 | halo + flicker |
+| 1x, `readback none` (historical) | ~31 | halo + flicker |
+
+`full` costs roughly half the frame rate, and **1x barely helps**: dropping to a
+quarter of the pixels bought 3 FPS. So the cost is dominated by the number of
+CPU-GPU synchronisation stalls, not by how much data moves or how much the GPU
+draws. Correct but ~10 FPS is not shippable.
+
+That points at exactly one optimisation: **stall for fewer resolves**. The
+resolve table lists well over a hundred distinct destinations, and the guest
+plainly does not read most of them back — the feedback loop that was ringing at
+~0.25 s needs one value, not a hundred buffers.
+
+## The general fix: a readback destination range
+
+Two new cvars, general rather than title-specific:
+
+- `readback_resolve_range_start`
+- `readback_resolve_range_length` (0 = no restriction, the default)
+
+A resolve is read back only if its written extent overlaps that region;
+everything else takes the readback-disabled path, doing the resolve exactly as
+before but skipping the stall. Both backends share one predicate in
+[command_processor.cc](../src/xenia/gpu/command_processor.cc), with
+compile-time checks for the overlap cases, and the first exclusion is logged
+once so a misconfigured range is visible.
+
+`-ReadbackRange "start,length"` on the launcher sets it; a bare `start` means a
+1 MB window.
+
+### Mode C is now the narrow-readback candidate
+
+`-Mode C` is 2x + CAS with readback restricted to `0x1B600000 + 0x800000`.
+That covers the cluster of small destinations the resolve table showed —
+`0x1B648000` and `0x1B6F8000` are 32x16 `k_8`, i.e. 512 bytes each, the classic
+shape of an auto-exposure average that the CPU reads. If the loop reads one of
+those, Mode C is correct at nearly the cost of no readback at all.
+
+```powershell
+.\fable2\run.ps1 -Mode C -Readback full -Quiet 'C:\Users\wdob\Desktop\Fable 2\Fable 2 PLT.iso'
+```
+
+Note `-Readback full` is still needed: the range says *which* resolves are read
+back, `readback_resolve` says *how*. The profile already ships `full`, so a
+plain `-Mode C` also works.
+
+### If Mode C is still wrong, bisect
+
+The candidate regions, in the order worth trying — each is one run, and the
+question each time is only "halo and flicker gone?":
+
+| Range | What is in it |
+|---|---|
+| `0x1B600000,0x800000` | small 32x16-64x64 destinations (Mode C default) |
+| `0x1A100000,0x100000` | the `k_32_FLOAT` 288x150 pair, a likely luminance buffer |
+| `0x19E00000,0x400000` | the `k_16_16_16_16_FLOAT` HDR scene buffers |
+| `0x12A00000,0x400000` | the post-process pyramid, incl. the format-aliased ones |
+| `0x12700000,0x300000` | the character mip chains |
+| `0x1ED00000,0x100000` | the final 1280x720 frame buffer |
+
+If none of them alone is enough, widen: `0x12000000,0x10000000` covers
+everything and should behave exactly like unrestricted `full`, which confirms
+the filter itself is sound before bisecting further.
+
+Record each run's FPS and verdict in [UAT_RESULTS.md](UAT_RESULTS.md).
+
+## The femtofork port has been removed
+
+With the signature proven never to match, and readback proven not to fix the
+morph textures, `fable2_selective_readback_resolve`, its `_fast` and `_dest`
+companions, and the whole title-scoped signature are deleted. There is no
+Fable-specific code left in `src/xenia/gpu`.
+
+What survives from that work, because it earned its place and is general:
+
+- `ReportReadbackResolveSkip` — the seven silent early exits in the readback
+  path now say why they bailed.
+- Per-slot submission fences on the readback buffers, fixing a torn/stale read
+  in the global `readback_resolve = "fast"` path for every title.
+- `log_resolves` (was `fable2_log_resolves`) — the resolve table that made this
+  whole diagnosis possible, now for any title.
+- `log_unscaled_resolve_textures`.
+- The new readback range filter.
 
 ## Goal and machine
 
@@ -320,37 +395,15 @@ frame pacing, but it cannot guarantee a change from 20 to 30 FPS.
 
 ## Implemented behavior
 
-### Selective morph readback
+### Readback destination range
 
-The port keeps Canary's current scaled GPU downsampler and double-buffered
-readback implementation. It does not copy the femtofork's old CPU downscaler or
-large renderer changes.
+`readback_resolve_range_start` and `readback_resolve_range_length` restrict
+readback to one guest region; a resolve outside it takes the readback-disabled
+path. Both backends share one predicate with compile-time overlap checks, and
+the first exclusion is logged once.
 
-The selector in [command_processor.cc](../src/xenia/gpu/command_processor.cc)
-matches the Fable II morph resolve by:
-
-- Title ID `0x4D5307F1`
-- Rectangle-list primitive with 3 indices
-- Copy destination `fable2_selective_readback_resolve_dest`
-  (default `0x12704000`, `0` matches any)
-- Valid color render-target source
-- Destination format `8_8_8_8`
-
-Cvars:
-
-- `fable2_selective_readback_resolve`: enables readback only for that signature
-  when global `readback_resolve = "none"`.
-- `fable2_selective_readback_resolve_fast`: uses the alternating buffers for
-  the matching resolve. Defaults to `false`.
-- `fable2_selective_readback_resolve_dest`: the destination address to match.
-- `fable2_log_resolves`: logs every distinct Fable II resolve signature.
-
-Effective-mode precedence is centralized and compile-time asserted:
-
-1. Global `readback_resolve = "fast"` or `"full"` wins unchanged.
-2. Global readback disabled with no matching Fable resolve remains disabled.
-3. A matching selective resolve is immediate/full by default.
-4. A matching selective resolve becomes fast only when the new flag is true.
+The femtofork's title-scoped selective readback is gone - its signature never
+matched, and readback does not fix the morph textures. See Round 6.
 
 ### Readback skip reporting
 
@@ -409,8 +462,10 @@ with the exact overrides it used — record that with each result.
 ### Launcher switches
 
 [run.ps1](run.ps1) takes experiment overrides so a run is reproducible from one
-command line: `-RtPath rtv|rov`, `-ScaleThreshold`, `-GammaAsUnorm16`,
-`-LogResolves`, `-ResolveDest`, `-LogLevel`, `-Quiet`.
+command line: `-Readback none|fast|full`, `-ReadbackRange "start,length"`,
+`-Sharpening bilinear|cas|fsr`, `-RtPath rtv|rov`, `-ScaleThreshold` (do not
+use — see the rejected section), `-GammaAsUnorm16`, `-LogResolves`,
+`-LogUnscaledTextures`, `-LogLevel`, `-Quiet`.
 
 It no longer pipes the emulator through `Out-Host`. That pipe marshalled every
 stdout log line synchronously through the PowerShell host — with `log_level = 2`

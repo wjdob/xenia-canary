@@ -1,9 +1,14 @@
 # Fable II profile
 
-This keeps current Xenia Canary and ports only the old femtofork's useful
-game-specific idea: selective readback for the known player/dog morph-texture
-resolve. Canary's newer GPU downscaler handles 2x readback; the old CPU
-downscaler and renderer plumbing were intentionally not copied.
+Xenia Canary with a Fable II profile, launcher and patch bundle.
+
+The old femtofork's selective-readback idea was ported, tested, and removed: its
+signature never matched this build, and readback does not fix the morph
+textures. What the investigation produced instead is general and stayed in —
+resolve logging, readback skip reporting, submission fences on the readback
+buffers, and a readback destination range filter.
+
+See [CONTEXT_HANDOFF.md](CONTEXT_HANDOFF.md) for the full investigation.
 
 ## Build and run
 
@@ -28,35 +33,32 @@ save into `fable2/content` only after backing it up.
 
 ## Profiles
 
-- `selective`: `readback_resolve = "full"` plus CAS. **This is the clean
-  configuration** - testing showed `"none"` gives a constant magenta halo behind
-  foliage and `"fast"` makes it strobe. A/B/C all use it.
-- `quality` (default): `readback_resolve = "fast"`, no sharpening. Kept as the
-  cheaper comparison point; it strobes.
+- `selective`: `readback_resolve = "full"` plus CAS. **This is the visually
+  correct configuration** — `"none"` gives a constant magenta halo behind
+  foliage and `"fast"` makes it strobe. A/B/C all use it. It is also slow.
+- `quality` (default): `readback_resolve = "fast"`, no sharpening. Faster, but
+  it strobes.
+
+The profile names are historical; "selective" no longer refers to anything.
 
 ```powershell
 .\fable2\run.ps1 -Profile selective
 ```
 
-The profile names are historical. The "selective" femtofork signature never
-matches this build, so `fable2_selective_readback_resolve` does nothing; the
-profile is just the one with the correct readback setting.
-
 ## A/B/C UAT
 
-These modes use the same selective profile and shader cache, force VSync on,
-and apply the same enabled game patches:
+These modes use the same profile and shader cache, force VSync on, and apply
+the same enabled game patches:
 
 ```powershell
-.\fable2\run.ps1 -Mode A "D:\Games\Fable II.iso" # 2x + CAS
-.\fable2\run.ps1 -Mode B "D:\Games\Fable II.iso" # 1x + FSR
-.\fable2\run.ps1 -Mode C "D:\Games\Fable II.iso" # 2x + CAS, previous-frame readback
+.\fable2\run.ps1 -Mode A "D:\Games\Fable II.iso" # 2x + CAS, full readback
+.\fable2\run.ps1 -Mode B "D:\Games\Fable II.iso" # 1x + FSR, full readback
+.\fable2\run.ps1 -Mode C "D:\Games\Fable II.iso" # 2x + CAS, readback narrowed
 ```
 
-Modes A and B use immediate selective readback. Mode C differs from A only by
-using the previous frame's readback buffer. That buffer now waits on the
-submission that wrote it before being mapped, so it is one frame stale by
-design rather than potentially torn.
+A and B differ only in resolution and sharpening. Mode C is the performance
+candidate: the same as A, but with readback restricted to `0x1B600000 +
+0x800000` — the small destinations most likely to be what the guest reads back.
 
 Record results in [UAT_RESULTS.md](UAT_RESULTS.md). Always add `-Quiet` to
 measured runs — stdout logging is synchronous and distorts frame times.
@@ -69,48 +71,51 @@ reported as warnings at the default log level, rate-limited after the first
 occurrence.
 
 ```powershell
-# What resolves does the game actually issue, and does one match the signature?
+# Which destinations does the game resolve to, and in what format?
 .\fable2\run.ps1 -Mode A -LogResolves -Quiet "D:\Games\Fable II.iso"
 
-# Retarget the signature at a different destination (0 matches any).
-.\fable2\run.ps1 -Mode A -ResolveDest 0x12704000 "D:\Games\Fable II.iso"
+# Which textures can't be read from the scaled resolve buffer at 2x?
+.\fable2\run.ps1 -Mode A -LogUnscaledTextures -Quiet "D:\Games\Fable II.iso"
 ```
 
-Look for these lines in `build/bin/Windows/Release/xenia.log`:
+In `build/bin/Windows/Release/xenia.log`:
 
-- `Fable II morph resolve signature matched ...` — the signature is being hit.
-- `Fable II selective readback delivered ...` — data actually reached the guest.
-- `Resolve readback to 0x... skipped because ...` — it matched but was dropped;
-  the reason names which prerequisite failed.
-
-If the first line never appears, the signature is wrong: run with
-`-LogResolves` and pick the destination from the printed table.
+- `Resolve: dest 0x...` — one line per distinct resolve signature. This is the
+  table to pick a `-ReadbackRange` from.
+- `Resolve readback to 0x... skipped because ...` — readback was requested but
+  dropped, with the failing prerequisite named.
+- `log_unscaled_resolve_textures is active` — confirms that check is running, so
+  that finding no reports under it actually means something.
 
 ## Experiment switches
 
 ```powershell
-.\fable2\run.ps1 -Mode A -Readback fast          # the profiles differ here
-.\fable2\run.ps1 -Mode A -Sharpening bilinear    # and here
-.\fable2\run.ps1 -Mode A -GammaAsUnorm16 false   # wrong colours on bright effects
-.\fable2\run.ps1 -Mode A -RtPath rov             # accuracy oracle, slower
-.\fable2\run.ps1 -Mode A -LogLevel 3             # everything, very slow
+.\fable2\run.ps1 -Mode A -Readback fast                          # none | fast | full
+.\fable2\run.ps1 -Mode C -ReadbackRange "0x1A100000,0x100000"    # narrow the readback
+.\fable2\run.ps1 -Mode A -Sharpening bilinear                    # bilinear | cas | fsr
+.\fable2\run.ps1 -Mode A -GammaAsUnorm16 false                   # wrong colours on bright effects
+.\fable2\run.ps1 -Mode A -RtPath rov                             # accuracy oracle, slower
+.\fable2\run.ps1 -Mode A -LogLevel 3                             # everything, very slow
 ```
+
+`-ReadbackRange` is the performance lever. `full` readback is visually correct
+but costs about half the frame rate, and the cost scales with the *number* of
+resolves read back rather than their size — so restricting readback to the one
+region the guest actually reads should keep the correctness cheaply. The
+bisection list is in [CONTEXT_HANDOFF.md](CONTEXT_HANDOFF.md).
+
+Overrides are applied after the mode defaults, and Xenia's parser takes the last
+occurrence of a flag, so `-Mode B -Sharpening bilinear` does override Mode B's
+FSR.
 
 `-ScaleThreshold` also exists, but **do not use it with Fable II**. Mixing 2x
 and native render targets breaks this game's heavy EDRAM aliasing: at 640 the
 whole scene blows out to white, blue and magenta. It is faster, and completely
 unusable.
 
-`-Readback` and `-Sharpening` exist because the `quality` and `selective`
-profiles differ in exactly those two settings and nothing else that matters, so
-they are the way to hold one fixed while changing the other. Overrides are
-applied after the mode defaults, and Xenia's parser takes the last occurrence
-of a flag, so `-Mode B -Sharpening bilinear` does override Mode B's FSR.
-
-`rov` is the pixel-shader-interlock render backend. It is the diagnostic to
-reach for when an effect comes out the wrong colour: if the artifact disappears
-under ROV, the RTV path's EDRAM ownership transfer or format handling is at
-fault. It is not a shipping setting.
+`rov` is the pixel-shader-interlock render backend. It removes the texture
+flicker but not the halo, and is far too slow to ship — useful only as an
+accuracy oracle.
 
 ## Patches
 
@@ -119,42 +124,42 @@ The active bundle is in [patches/](patches/). Inspect and toggle it with:
 ```powershell
 .\fable2\patch-preset.ps1 -Show
 .\fable2\patch-preset.ps1 -Preset P2
+.\fable2\patch-preset.ps1 -Morph on
 ```
 
 Currently enabled: 600p Resolution, Skip intro videos (twice — redundant but
 intentional), 60 FPS, High Tick Rate, Unlock Website Items, Disable Texture
 Morphing, Disable MSAA, Unlock Collectors Edition Content.
 
-`Disable Texture Morphing` is what fixes the black hero and dog textures — not
-the selective readback code. Testing has shown the selective signature never
-matches, and that even global `readback_resolve = "fast"` leaves the hero and
-dog black, so readback is not the mechanism at all. Keep this patch enabled.
-
-Toggle morphing back on for testing with `.\fable2\patch-preset.ps1 -Morph on`,
-and restore with `-Morph off`.
+`Disable Texture Morphing` is what fixes the black hero and dog textures. The
+selective readback signature never matched, and even global
+`readback_resolve = "fast"` leaves the hero and dog black, so readback is not
+the mechanism at all. Keep this patch enabled.
 
 `Disable MSAA` and `600p Resolution` write 16 bytes apart in what is almost
-certainly the same render-config structure. `600p` exists to fix strobing under
-the game's *original* MSAA, so the two are not independent — that is what the
-P0–P3 presets exist to bisect.
+certainly the same render-config structure, so they are not independent — that
+is what the P0–P3 presets exist to bisect. Neither turned out to affect the
+halo, so that bisect was never needed.
 
 ## Test order
 
-1. Start with `quality`. Check the opening, first outdoor area, hero
+1. Start with `-Mode A`. Check the opening, first outdoor area, hero
    adulthood/makeup, dog appearance, and the clothing menu.
-2. Repeat with `selective`, comparing frame pacing and the hero/dog textures.
-   `full` readback is correct but stalls the GPU on every resolve, so this
-   comparison is now mainly about cost.
-3. For colored boxes or wrong-colour effects, first try `-Readback full` - that
-   is what fixed the foliage halo. Then `-GammaAsUnorm16 false`, then
-   `-RtPath rov` as the oracle.
+2. For wrong-colour effects or flicker, the first thing to check is
+   `-Readback full` — that is what fixed the foliage halo. Then
+   `-GammaAsUnorm16 false`, then `-RtPath rov` as the oracle.
+3. For frame rate, narrow the readback with `-ReadbackRange` rather than
+   turning it off.
 4. If 2x is too slow, use `-Mode B` (1x + FSR).
 
 Keep VSync, patches, and the test location unchanged during each comparison.
 
-`use_fuzzy_alpha_epsilon` is left off: it targets NVIDIA alpha-test flicker,
-not opaque colored boxes, and can change transparency. `clear_memory_page_state`
-is enabled because current Fable II reports associate it with reduced video
+Note that Xenia rewrites the profile TOML on exit — hex becomes decimal and new
+cvars get appended. Command-line overrides are not written back.
+
+`use_fuzzy_alpha_epsilon` is left off: it targets NVIDIA alpha-test flicker, not
+opaque colored boxes, and can change transparency. `clear_memory_page_state` is
+enabled because current Fable II reports associate it with reduced video
 flicker. Synchronous shader compilation is kept on (async off) because skipped
 draws while pipelines compile produce exactly the coloured buffers this profile
 is trying to avoid.

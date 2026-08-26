@@ -31,16 +31,19 @@ param(
   [ValidateSet("", "bilinear", "cas", "fsr")]
   [string]$Sharpening = "",
 
-  # Log the register signature of every distinct Fable II resolve.
+  # Log the register signature of every distinct resolve the title issues.
   [switch]$LogResolves,
+
+  # Restrict readback to one guest region, as "start,length" or "start" for a
+  # 1 MB window. Readback cost scales with the number of resolves read back,
+  # so narrowing it to the region the game actually reads keeps correctness at
+  # a fraction of the price.
+  [string]$ReadbackRange = "",
 
   # Log textures that a scaled resolve wrote but that have to be read from
   # shared memory instead of the scaled resolve buffer - the ones most likely
   # to look stale or flicker at 2x.
   [switch]$LogUnscaledTextures,
-
-  # Resolve destination the selective morph readback matches. 0 matches any.
-  [string]$ResolveDest = "",
 
   # 0 = error, 1 = warning, 2 = info (default), 3 = debug. Level 3 surfaces
   # every readback skip but costs a lot of frame time.
@@ -85,33 +88,40 @@ if ($isUat) {
   $xeniaArguments += "--apply_patches=true"
   $xeniaArguments += "--vsync=true"
   $xeniaArguments += "--framerate_limit=0"
-  $selectiveFast = if ($Mode -eq "C") { "true" } else { "false" }
-  $xeniaArguments += "--fable2_selective_readback_resolve_fast=$selectiveFast"
   if ($Mode -eq "B") {
     $xeniaArguments += "--draw_resolution_scale_x=1"
     $xeniaArguments += "--draw_resolution_scale_y=1"
     $xeniaArguments += "--postprocess_scaling_and_sharpening=fsr"
   }
-  # The selective morph signature has been shown never to match this build, so
-  # A/B/C all run with no readback at all unless -Readback overrides it. Don't
-  # describe them as differing in readback.
   $modeDescription = switch ($Mode) {
     "A" { "2x + CAS" }
     "B" { "1x + FSR" }
-    "C" { "2x + CAS, selective-fast flag set (currently inert)" }
+    "C" { "2x + CAS, readback restricted to the exposure region" }
+  }
+  # Mode C is now the narrow-readback candidate: full readback, but only for
+  # the small luminance/exposure destinations, which is where the guest-side
+  # feedback loop reads. Overridable with -ReadbackRange.
+  if ($Mode -eq "C" -and !$ReadbackRange) {
+    $ReadbackRange = "0x1B600000,0x800000"
   }
 }
 
 # Experiment overrides, applicable to both profile and UAT launches. These come
 # after the mode block so they win over its defaults.
 if ($Readback) { $xeniaArguments += "--readback_resolve=$Readback" }
+if ($ReadbackRange) {
+  $rangeParts = $ReadbackRange -split ","
+  $rangeStart = $rangeParts[0].Trim()
+  $rangeLength = if ($rangeParts.Count -gt 1) { $rangeParts[1].Trim() } else { "0x100000" }
+  $xeniaArguments += "--readback_resolve_range_start=$rangeStart"
+  $xeniaArguments += "--readback_resolve_range_length=$rangeLength"
+}
 if ($Sharpening) { $xeniaArguments += "--postprocess_scaling_and_sharpening=$Sharpening" }
 if ($RtPath) { $xeniaArguments += "--render_target_path_d3d12=$RtPath" }
 if ($ScaleThreshold -ge 0) { $xeniaArguments += "--draw_resolution_scale_threshold=$ScaleThreshold" }
 if ($GammaAsUnorm16) { $xeniaArguments += "--gamma_render_target_as_unorm16=$GammaAsUnorm16" }
-if ($LogResolves) { $xeniaArguments += "--fable2_log_resolves=true" }
+if ($LogResolves) { $xeniaArguments += "--log_resolves=true" }
 if ($LogUnscaledTextures) { $xeniaArguments += "--log_unscaled_resolve_textures=true" }
-if ($ResolveDest) { $xeniaArguments += "--fable2_selective_readback_resolve_dest=$ResolveDest" }
 if ($LogLevel -ge 0) { $xeniaArguments += "--log_level=$LogLevel" }
 if ($Quiet) { $xeniaArguments += "--log_to_stdout=false" }
 

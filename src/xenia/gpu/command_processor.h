@@ -239,12 +239,12 @@ class CommandProcessor {
     return (uint64_t(address) << 32) | uint64_t(length);
   }
 
-  // Fable II generates the player and dog morph textures on the GPU, then
-  // consumes the resolved data on the CPU. The femtofork identified this
-  // resolve by a stable register signature. Keep the title-specific check in
-  // one place while letting each backend use its current readback path.
-  bool IsFable2SelectiveReadbackResolve() const;
-  ReadbackResolveMode GetEffectiveReadbackResolveMode();
+  // Readback stalls the CPU on the GPU, and the cost scales with how many
+  // resolves are read back rather than how large they are. When a title only
+  // consumes a few destinations on the CPU, restricting readback to that
+  // region keeps the correctness and drops most of the cost.
+  bool IsReadbackResolveIncluded(uint32_t written_address,
+                                 uint32_t written_length);
 
   // Logs a resolve readback that was skipped despite being requested. The
   // first occurrence of each reason is logged as a warning so it's visible at
@@ -254,27 +254,17 @@ class CommandProcessor {
                                  uint32_t written_address,
                                  uint32_t written_length);
 
-  // Logs the register signature of every resolve issued by Fable II when
-  // fable2_log_resolves is set, deduplicated so the log stays a short table.
-  // Must be called before the readback mode is branched on: a resolve that
-  // doesn't match the signature never reaches the readback path, and those are
-  // exactly the ones needed to find the right destination address.
-  void LogFable2Resolve();
+  // Logs the register signature of every distinct resolve the title issues
+  // when log_resolves is set, deduplicated so the log stays a short table.
+  // Must be called before the readback mode is branched on, so that resolves
+  // which are never read back still appear.
+  void LogResolve();
 
-  // One-shot notice that the selective readback actually delivered data to the
-  // guest, so "the signature never matched" and "the signature matched but the
-  // readback was skipped" can be told apart.
-  void ReportFable2SelectiveReadbackCompleted(uint32_t written_address,
-                                              uint32_t written_length);
-
-  // Readback diagnostics state. The registers are unchanged for the duration
-  // of a single IssueCopy, so the reporters re-check the Fable II signature
-  // themselves rather than threading a flag through both backends.
+  // Readback diagnostics state.
   uint64_t readback_resolve_skip_counts_[size_t(
       ReadbackResolveSkipReason::kCount)] = {};
-  std::unordered_set<uint64_t> logged_fable2_resolve_signatures_;
-  bool fable2_selective_readback_resolve_matched_ = false;
-  bool fable2_selective_readback_resolve_delivered_ = false;
+  std::unordered_set<uint64_t> logged_resolve_signatures_;
+  bool logged_readback_resolve_range_exclusion_ = false;
 
   void WorkerThreadMain();
   virtual bool SetupContext() = 0;

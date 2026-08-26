@@ -3175,8 +3175,8 @@ bool D3D12CommandProcessor::IssueCopy() {
   if (!BeginSubmission(true)) {
     return false;
   }
-  LogFable2Resolve();
-  ReadbackResolveMode readback_mode = GetEffectiveReadbackResolveMode();
+  LogResolve();
+  ReadbackResolveMode readback_mode = GetReadbackResolveMode();
   if (readback_mode == ReadbackResolveMode::kDisabled) {
     uint32_t written_address, written_length;
     return render_target_cache_->Resolve(*memory_, *shared_memory_,
@@ -3198,6 +3198,12 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath(
     return false;
   }
   if (!written_length) {
+    return true;
+  }
+
+  // Skip the readback for a resolve outside the configured region, leaving the
+  // resolve itself exactly as the readback-disabled path would have done it.
+  if (!IsReadbackResolveIncluded(written_address, written_length)) {
     return true;
   }
 
@@ -3491,7 +3497,6 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath(
       memory::vastcpy(physaddr, (uint8_t*)readback_mapping, readback_length);
       D3D12_RANGE readback_write_range = {};
       read_source->Unmap(0, &readback_write_range);
-      ReportFable2SelectiveReadbackCompleted(written_address, readback_length);
     }
   }
   return true;
