@@ -320,7 +320,7 @@ class D3D12CommandProcessor final : public CommandProcessor {
 
   bool IssueCopy() override;
   XE_NOINLINE
-  bool IssueCopy_ReadbackResolvePath();
+  bool IssueCopy_ReadbackResolvePath(ReadbackResolveMode readback_mode);
   void InitializeTrace() override;
 
  private:

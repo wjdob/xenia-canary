@@ -3063,7 +3063,7 @@ bool VulkanCommandProcessor::IssueCopy() {
   }
 
   // CPU readback resolve path (if not disabled).
-  ReadbackResolveMode readback_mode = GetReadbackResolveMode();
+  ReadbackResolveMode readback_mode = GetEffectiveReadbackResolveMode();
   if (readback_mode == ReadbackResolveMode::kDisabled || !written_length) {
     return true;
   }

@@ -3175,18 +3175,19 @@ bool D3D12CommandProcessor::IssueCopy() {
   if (!BeginSubmission(true)) {
     return false;
   }
-  ReadbackResolveMode readback_mode = GetReadbackResolveMode();
+  ReadbackResolveMode readback_mode = GetEffectiveReadbackResolveMode();
   if (readback_mode == ReadbackResolveMode::kDisabled) {
     uint32_t written_address, written_length;
     return render_target_cache_->Resolve(*memory_, *shared_memory_,
                                          *texture_cache_, written_address,
                                          written_length);
   } else {
-    return IssueCopy_ReadbackResolvePath();
+    return IssueCopy_ReadbackResolvePath(readback_mode);
   }
 }
 XE_NOINLINE
-bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
+bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath(
+    ReadbackResolveMode readback_mode) {
   uint32_t written_address, written_length;
   reg::RB_COPY_DEST_INFO copy_dest_info;
   bool is_scaled;
@@ -3326,7 +3327,6 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
     }
   }
 
-  ReadbackResolveMode readback_mode = GetReadbackResolveMode();
   uint32_t read_index = readback_mode == ReadbackResolveMode::kFast
                             ? 1 - write_index
                             : write_index;

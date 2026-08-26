@@ -1,0 +1,117 @@
+title_name = "Fable II" # GOTY/Platinum Edition only
+title_id = "4D5307F1"
+hash = "4145F96D2DEE2AB5" # default.xex
+
+# From Guy's Fable 2 PC Ultimate Guide, as carried by the femtofork.
+[[patch]]
+    name = "600p Resolution (Fixes Strobe)"
+    desc = "Reduces vertical resolution to fix strobing lighting. Compatible with the separate 1280x720 patch."
+    author = "Guy"
+    is_enabled = true
+
+    [[patch.be8]]
+        address = 0x8238df4f
+        value = 0x58
+
+[[patch]]
+    name = "Skip intro videos"
+    desc = "Skips the Microsoft and Lionhead logo videos."
+    author = "Just Harry"
+    is_enabled = true
+
+    [[patch.be32]]
+        address = 0x822f4974
+        value = 0x60000000
+    [[patch.be32]]
+        address = 0x822f4978
+        value = 0x60000000
+    [[patch.be32]]
+        address = 0x822f499c
+        value = 0x60000000
+    [[patch.be32]]
+        address = 0x822f498c
+        value = 0x60000000
+
+
+[[patch]]
+    name = "60 FPS"
+    author = "Margen67"
+    is_enabled = true
+
+    [[patch.be8]]
+        address = 0x82b9c8eb
+        value = 0x01
+
+[[patch]]
+    name = "High Tick Rate"
+    desc = "Doubles tickrate to 30hz. Vastly improves in-game UI framerate. Improves input delay. Minor side effects."
+    author = "Guy"
+    is_enabled = true
+
+    [[patch.be32]]
+        address = 0x8233aeb4
+        value = 0x60000000
+    [[patch.be8]]
+        address = 0x83319511
+        value = 0x3e
+
+[[patch]]
+    name = "Skip intro videos"
+    desc = "Prevents the Microsoft and Lionhead logo videos from playing when the game is launched."
+    author = "\"Just Harry\""
+    is_enabled = true
+
+    [[patch.be32]]
+        address = 0x822f4974 # Microsoft logo stack-pointer adjustment.
+        value = 0x60000000 # nop
+    [[patch.be32]]
+        address = 0x822f4978 # Microsoft logo playback call.
+        value = 0x60000000 # nop
+    [[patch.be32]]
+        address = 0x822f499c # Lionhead logo stack-pointer adjustment.
+        value = 0x60000000 # nop
+    [[patch.be32]]
+        address = 0x822f498c # Lionhead logo playback call.
+        value = 0x60000000 # nop
+
+[[patch]]
+    name = "Unlock Website Items"
+    desc = "Unlocks the Guild chest containing the items that were obtainable from the Fable 2 website."
+    author = "Guy"
+    is_enabled = true
+
+    [[patch.be8]]
+        address = 0x8256e4e3
+        value = 0x01
+    [[patch.be32]]
+        address = 0x8256e4b8
+        value = 0x42800028
+
+[[patch]]
+    name = "Disable Texture Morphing"
+    desc = "Workaround for the dog's & the hero's broken textures. Makeup is still bugged. Can make morphs look strange."
+    author = "Guy"
+    is_enabled = true
+
+    [[patch.be16]]
+        address = 0x8220ef10
+        value = 0x4280
+
+[[patch]]
+    name = "Disable MSAA (Multi-Sample Anti-Aliasing)"
+    author = "Margen67"
+    is_enabled = true
+
+    [[patch.be8]]
+        address = 0x8238df3f
+        value = 0x01
+
+[[patch]]
+    name = "Unlock Collectors Edition Content"
+    desc = "Unlocks Hal's items in the Guild chest, and enables the Hall of the Dead dungeon."
+    author = "Guy"
+    is_enabled = true
+
+    [[patch.be32]]
+        address = 0x824b366c
+        value = 0x39200001

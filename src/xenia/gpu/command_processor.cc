@@ -18,6 +18,7 @@
 #include "xenia/gpu/gpu_flags.h"
 #include "xenia/gpu/graphics_system.h"
 #include "xenia/gpu/packet_disassembler.h"
+#include "xenia/gpu/registers.h"
 #include "xenia/gpu/sampler_info.h"
 #include "xenia/gpu/texture_info.h"
 #include "xenia/gpu/xenos_zpd_report.h"
@@ -76,6 +77,24 @@ DEFINE_string(
     "GPU");
 
 UPDATE_from_string(readback_resolve, 2025, 12, 4, 21, "fast");
+
+DEFINE_bool(
+    fable2_selective_readback_resolve, false,
+    "Perform resolve readback only for Fable II's known player and dog "
+    "morph-texture resolve. This ports the femtofork's narrow workaround while "
+    "using Canary's current scaled GPU readback path. Intended for "
+    "readback_resolve = \"none\"; use \"fast\" or \"full\" for general "
+    "readback instead.",
+    "HACKS");
+
+DEFINE_bool(
+    fable2_selective_readback_resolve_fast, false,
+    "Use the previous frame's buffer for Fable II selective readback after "
+    "the initial or cache-miss synchronization. This avoids the normal GPU "
+    "queue stall, but the player and dog morph data may be one frame stale. "
+    "Requires fable2_selective_readback_resolve and readback_resolve = "
+    "\"none\".",
+    "HACKS");
 
 DEFINE_bool(
     readback_resolve_half_pixel_offset, false,
@@ -139,6 +158,82 @@ ReadbackResolveMode GetReadbackResolveMode() {
 
 void SetReadbackResolveMode(const std::string& mode) {
   OVERRIDE_string(readback_resolve, mode);
+}
+
+namespace {
+
+constexpr bool IsFable2MorphResolveSignature(
+    uint32_t title_id, xenos::PrimitiveType primitive_type,
+    uint32_t index_count, uint32_t copy_dest_base, uint32_t copy_src_select,
+    xenos::ColorFormat copy_dest_format) {
+  return title_id == 0x4D5307F1 &&
+         primitive_type == xenos::PrimitiveType::kRectangleList &&
+         index_count == 3 && copy_dest_base == 0x12704000 &&
+         copy_src_select < xenos::kMaxColorRenderTargets &&
+         copy_dest_format == xenos::ColorFormat::k_8_8_8_8;
+}
+
+constexpr ReadbackResolveMode SelectReadbackResolveMode(
+    ReadbackResolveMode configured_mode, bool selective_resolve,
+    bool selective_fast) {
+  if (configured_mode != ReadbackResolveMode::kDisabled ||
+      !selective_resolve) {
+    return configured_mode;
+  }
+  return selective_fast ? ReadbackResolveMode::kFast
+                        : ReadbackResolveMode::kFull;
+}
+
+static_assert(IsFable2MorphResolveSignature(
+    0x4D5307F1, xenos::PrimitiveType::kRectangleList, 3, 0x12704000,
+    xenos::kMaxColorRenderTargets - 1, xenos::ColorFormat::k_8_8_8_8));
+static_assert(!IsFable2MorphResolveSignature(
+    0x4D5307F1, xenos::PrimitiveType::kRectangleList, 3, 0x12704000,
+    xenos::kMaxColorRenderTargets, xenos::ColorFormat::k_8_8_8_8));
+static_assert(SelectReadbackResolveMode(ReadbackResolveMode::kDisabled, false,
+                                        false) ==
+              ReadbackResolveMode::kDisabled);
+static_assert(SelectReadbackResolveMode(ReadbackResolveMode::kDisabled, false,
+                                        true) ==
+              ReadbackResolveMode::kDisabled);
+static_assert(SelectReadbackResolveMode(ReadbackResolveMode::kDisabled, true,
+                                        false) == ReadbackResolveMode::kFull);
+static_assert(SelectReadbackResolveMode(ReadbackResolveMode::kDisabled, true,
+                                        true) == ReadbackResolveMode::kFast);
+static_assert(SelectReadbackResolveMode(ReadbackResolveMode::kFast, true,
+                                        false) == ReadbackResolveMode::kFast);
+static_assert(SelectReadbackResolveMode(ReadbackResolveMode::kFull, true,
+                                        true) == ReadbackResolveMode::kFull);
+
+}  // namespace
+
+bool CommandProcessor::IsFable2SelectiveReadbackResolve() const {
+  if (!cvars::fable2_selective_readback_resolve ||
+      kernel_state_->title_id() != 0x4D5307F1) {
+    return false;
+  }
+
+  const reg::VGT_DRAW_INITIATOR draw_initiator =
+      register_file_->Get<reg::VGT_DRAW_INITIATOR>();
+  const reg::RB_COPY_CONTROL copy_control =
+      register_file_->Get<reg::RB_COPY_CONTROL>();
+  const reg::RB_COPY_DEST_INFO copy_dest_info =
+      register_file_->Get<reg::RB_COPY_DEST_INFO>();
+  return IsFable2MorphResolveSignature(
+      kernel_state_->title_id(), draw_initiator.prim_type,
+      draw_initiator.num_indices,
+      (*register_file_)[XE_GPU_REG_RB_COPY_DEST_BASE],
+      copy_control.copy_src_select, copy_dest_info.copy_dest_format);
+}
+
+ReadbackResolveMode CommandProcessor::GetEffectiveReadbackResolveMode() const {
+  ReadbackResolveMode configured_mode = GetReadbackResolveMode();
+  bool selective_resolve =
+      configured_mode == ReadbackResolveMode::kDisabled &&
+      IsFable2SelectiveReadbackResolve();
+  return SelectReadbackResolveMode(
+      configured_mode, selective_resolve,
+      cvars::fable2_selective_readback_resolve_fast);
 }
 
 ZPDMode GetZPDMode() {

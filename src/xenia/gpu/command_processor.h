@@ -221,6 +221,13 @@ class CommandProcessor {
     return (uint64_t(address) << 32) | uint64_t(length);
   }
 
+  // Fable II generates the player and dog morph textures on the GPU, then
+  // consumes the resolved data on the CPU. The femtofork identified this
+  // resolve by a stable register signature. Keep the title-specific check in
+  // one place while letting each backend use its current readback path.
+  bool IsFable2SelectiveReadbackResolve() const;
+  ReadbackResolveMode GetEffectiveReadbackResolveMode() const;
+
   void WorkerThreadMain();
   virtual bool SetupContext() = 0;
   virtual void ShutdownContext() = 0;

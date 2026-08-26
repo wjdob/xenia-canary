@@ -1,0 +1,7 @@
+/cache_fable2_*/
+/config/
+/content/
+/plugins/
+/scratch/
+/xenia-canary.config.toml
+/*.log
