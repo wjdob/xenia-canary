@@ -49,6 +49,10 @@ param(
   # to try for it on the RTV path.
   [switch]$ExactDepth24,
 
+  # Arbitrary cvar overrides, so a new hypothesis needs no launcher change:
+  #   -Cvar gamma_render_target_as_unorm16=false,occlusion_query=strict
+  [string[]]$Cvar = @(),
+
   # Log the register signature of every distinct resolve the title issues.
   [switch]$LogResolves,
 
@@ -143,6 +147,16 @@ if ($FramesInFlight -ge 0) { $xeniaArguments += "--gpu_frames_in_flight=$FramesI
 if ($ExactDepth24) {
   $xeniaArguments += "--depth_float24_convert_in_pixel_shader=true"
   $xeniaArguments += "--depth_float24_round=true"
+}
+foreach ($override in $Cvar) {
+  foreach ($pair in ($override -split ",")) {
+    $pair = $pair.Trim()
+    if (!$pair) { continue }
+    if ($pair -notmatch "^[A-Za-z_][A-Za-z0-9_]*=") {
+      throw "-Cvar entries must look like name=value, got: $pair"
+    }
+    $xeniaArguments += "--$pair"
+  }
 }
 if ($LogResolves) { $xeniaArguments += "--log_resolves=true" }
 if ($LogUnscaledTextures) { $xeniaArguments += "--log_unscaled_resolve_textures=true" }

@@ -33,18 +33,40 @@ So the foliage halo is essentially fixed upstream, and the frame rate is well
 above where the workaround left it (1x was ~26-30 with the sync, 2x ~16-17).
 
 **What remains is a flicker on the dog** - black striping in a downward
-triangle from the belly toward the ground, more frequent when the camera moves.
-That reads as shadow-map acne, i.e. a depth-precision artifact. Note that ROV
-was the one setting that ever removed this flicker, and ROV forces
-`depth_float24_round` and `depth_float24_convert_in_pixel_shader`
-([d3d12_render_target_cache.cc:1033](src/xenia/gpu/d3d12/d3d12_render_target_cache.cc#L1033)),
-so those two on the RTV path are the obvious next test - `-ExactDepth24` on the
-launcher sets both. Fable II renders its shadow maps as 256x256 targets at 4x
-MSAA, which the resolve table shows plainly.
+triangle from the belly toward the ground, more frequent when the camera moves,
+and reported as looking like a "silhouette".
 
-Whether `await_gpu_completion_per_frame` is still needed at all after this merge
-is **not yet determined**. Everything below documents how the pre-merge
-conclusion was reached and remains accurate for that tree.
+That reads as shadow-map acne, so the first test was `-ExactDepth24`, which
+forces the two depth-precision settings ROV always uses
+([d3d12_render_target_cache.cc:1033](src/xenia/gpu/d3d12/d3d12_render_target_cache.cc#L1033)).
+**It made things distinctly worse** - widespread texture flicker plus foliage
+showing through solid objects. So the depth-precision reading is not supported,
+and two of the three things ROV forces are ruled out. (That
+`depth_float24_convert_in_pixel_shader` degrades rendering on the new EDRAM
+addressing may be an upstream bug in its own right.)
+
+What is actually known about this fault:
+
+- Present at 1x and 2x, with and without the per-frame sync.
+- **ROV removed it** - the only setting that ever has, measured before the
+  merge, not retested since.
+- `-ExactDepth24` makes it worse.
+- The one remaining thing ROV forces, `gamma_render_target_as_unorm16 = false`,
+  is untested.
+
+Next: retest `-RtPath rov` post-merge to confirm the cause is unchanged, then
+`-Cvar gamma_render_target_as_unorm16=false`. If neither, the difference is
+deeper than any single cvar and a `xenia-gpu-d3d12-trace-viewer` capture of a
+flickering frame is the right tool - that has still never been done, and would
+likely have shortened this entire investigation.
+
+`await_gpu_completion_per_frame` has since been measured post-merge and **is no
+longer needed** - with it on, only the dog flicker remains, exactly as with it
+off, but the frame rate is lower. Both profiles now default it to `false`. The
+cvar stays because it is general and was genuinely the fix before the merge.
+
+Everything below documents how the pre-merge conclusion was reached and remains
+accurate for that tree.
 
 ## The headline finding
 

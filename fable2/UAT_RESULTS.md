@@ -34,17 +34,45 @@ The residual fault is black striping in a downward triangle from the dog's
 belly to the ground, worse when the camera moves - shadow-map acne. Fable II
 renders shadow maps as 256x256 at 4x MSAA.
 
-Not yet measured, and the questions that matter now:
+Both follow-ups have now been run:
 
-1. `-Mode B` with the sync **on** - does it fix the dog flicker? If not, the
-   sync has no remaining job and both profiles should set it back to `false`,
-   which is worth 5-7 FPS.
-2. `-Mode B -SyncPerFrame false -ExactDepth24` - forces the two depth-precision
-   settings ROV always uses. ROV was the only setting that ever removed this
-   flicker, so this is the prime suspect.
-3. `-Mode B -SyncPerFrame false -ExactDepth24` plus each half separately
-   (`depth_float24_round`, `depth_float24_convert_in_pixel_shader`) if the pair
-   works, to find which one matters.
+| Run | Result |
+|---|---|
+| `-Mode B` (sync **on**) | Only the dog flicker remains - same as sync off - but choppier. **The sync no longer earns its cost.** |
+| `-Mode B -SyncPerFrame false -ExactDepth24` | **Worse.** Widespread texture flicker, the dog triangle, and foliage showing through solid objects as silhouettes. |
+
+So `await_gpu_completion_per_frame` is now `false` in both profiles: after the
+upstream merge it fixes nothing here and only costs frame rate. Keep the cvar -
+it is general, and it was genuinely the fix before the merge.
+
+`-ExactDepth24` is a **dead end** for this title. Forcing exact 20e4 depth makes
+rendering distinctly worse rather than better, which also means the shadow-acne
+reading of the dog flicker is not supported. Worth noting that
+`depth_float24_convert_in_pixel_shader` interacting badly with the new EDRAM
+sample addressing would be an upstream bug in its own right.
+
+### The dog flicker: what is actually known
+
+- Black striping in a downward triangle from the dog's belly to the ground,
+  worse under camera motion. The word the user reached for was "silhouette".
+- Present at 1x and 2x, with and without the per-frame sync.
+- **ROV removed it** - the only setting that ever has, measured before the
+  merge. Not yet retested since.
+- `-ExactDepth24` makes it worse, which rules out two of the three things ROV
+  forces (`depth_float24_round`, `depth_float24_convert_in_pixel_shader`).
+- The third thing ROV forces is `gamma_render_target_as_unorm16 = false`, and
+  that is **untested**.
+
+Next, in order:
+
+1. `-Mode B -RtPath rov` - does ROV still fix it post-merge? Establishes whether
+   the cause is unchanged. Slow, diagnostic only.
+2. `-Mode B -Cvar gamma_render_target_as_unorm16=false` - the one remaining ROV
+   difference.
+3. If neither: the fault is in what ROV emulates differently at a deeper level
+   than any single cvar, and a `xenia-gpu-d3d12-trace-viewer` capture of a
+   flickering frame is the right tool. That has still never been done and would
+   likely have shortened this whole investigation.
 
 ## Measured (before the upstream merge)
 

@@ -112,10 +112,9 @@ uses (`depth_float24_convert_in_pixel_shader` and `depth_float24_round`).
 Shadow-map striping is a depth-precision artifact, so it is the first thing to
 try for the residual dog flicker on the RTV path.
 
-`-SyncPerFrame` and `-FramesInFlight` control the per-frame synchronization the
-game needs; both profiles already enable it, so these are only for testing.
-`-FramesInFlight 1 -SyncPerFrame false` is the cheaper variant worth trying —
-it waits for the previous frame instead of a full GPU idle.
+`-SyncPerFrame` and `-FramesInFlight` control per-frame CPU-GPU synchronization.
+This was the fix before upstream's EDRAM rework; since that merge it fixes
+nothing here and only costs frame rate, so both profiles default it off.
 
 `-Readback` and `-ReadbackRange` are no longer needed for this title — readback
 is off and the per-frame sync does the job. They remain useful for other
