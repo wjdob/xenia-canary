@@ -1,8 +1,8 @@
 # Fable II / Xenia Canary context handoff
 
-Last updated: 2026-08-25
+Last updated: 2026-08-26
 
-Status: Three rounds of instrumented gameplay testing are done. The femtofork
+Status: Seven rounds of instrumented gameplay testing are done. The femtofork
 selective readback never runs, and global readback does not fix the morph
 textures either. The foliage halo and the texture flicker are both explained by
 Fable II needing one CPU-GPU synchronization per frame. Range-filtered runs
@@ -19,11 +19,10 @@ but not yet tested in-game.
   **not** the selective readback code, which never runs. Global readback has
   now been tested too and does not fix them either, so readback is not the
   mechanism and the femtofork port is dead weight.
-- **The halo and the flicker are fixed by `readback_resolve = "full"`.** `none`
-  gives a constant halo, `fast` makes it strobe at ~0.25 s with the dog in
-  sync, `full` is clean. The `selective` profile now ships `"full"`. CAS and
-  `draw_resolution_scale_threshold` are both ruled out — the threshold makes it
-  far worse and must never be revisited.
+- `readback_resolve = "full"` is visually clean (`none` gives a constant halo,
+  `fast` makes it strobe at ~0.25 s with the dog in sync) but costs half the
+  frame rate. CAS and `draw_resolution_scale_threshold` are both ruled out — the
+  threshold makes it far worse and must never be revisited.
 - **The game needs one CPU-GPU sync per frame; the readback data is irrelevant.**
   Four disjoint readback ranges each fixed it, including the character mip
   chains, which cannot supply data that fixes a foliage halo. The new
