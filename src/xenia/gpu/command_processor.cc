@@ -96,6 +96,21 @@ DEFINE_bool(
     "\"none\".",
     "HACKS");
 
+DEFINE_uint64(
+    fable2_selective_readback_resolve_dest, 0x12704000,
+    "Resolve destination address that fable2_selective_readback_resolve "
+    "matches. The femtofork validated 0x12704000 on the GOTY/Platinum "
+    "executable; other revisions may differ. Set to 0 to match any "
+    "destination that satisfies the rest of the signature.",
+    "HACKS");
+
+DEFINE_bool(
+    fable2_log_resolves, false,
+    "Log the register signature of every distinct resolve issued by Fable II. "
+    "Use this to find the destination address of the player and dog "
+    "morph-texture resolve for fable2_selective_readback_resolve_dest.",
+    "HACKS");
+
 DEFINE_bool(
     readback_resolve_half_pixel_offset, false,
     "When resolution scaling and readback resolve are enabled, resolve "
@@ -162,13 +177,21 @@ void SetReadbackResolveMode(const std::string& mode) {
 
 namespace {
 
+// The femtofork's destination address, kept as the default of
+// fable2_selective_readback_resolve_dest and as the value the compile-time
+// checks below are written against.
+constexpr uint32_t kFable2MorphResolveDest = 0x12704000;
+
+// expected_dest of 0 matches any destination, for revisions where the
+// femtofork's address doesn't hold.
 constexpr bool IsFable2MorphResolveSignature(
     uint32_t title_id, xenos::PrimitiveType primitive_type,
     uint32_t index_count, uint32_t copy_dest_base, uint32_t copy_src_select,
-    xenos::ColorFormat copy_dest_format) {
+    xenos::ColorFormat copy_dest_format, uint32_t expected_dest) {
   return title_id == 0x4D5307F1 &&
          primitive_type == xenos::PrimitiveType::kRectangleList &&
-         index_count == 3 && copy_dest_base == 0x12704000 &&
+         index_count == 3 &&
+         (!expected_dest || copy_dest_base == expected_dest) &&
          copy_src_select < xenos::kMaxColorRenderTargets &&
          copy_dest_format == xenos::ColorFormat::k_8_8_8_8;
 }
@@ -185,11 +208,24 @@ constexpr ReadbackResolveMode SelectReadbackResolveMode(
 }
 
 static_assert(IsFable2MorphResolveSignature(
-    0x4D5307F1, xenos::PrimitiveType::kRectangleList, 3, 0x12704000,
-    xenos::kMaxColorRenderTargets - 1, xenos::ColorFormat::k_8_8_8_8));
+    0x4D5307F1, xenos::PrimitiveType::kRectangleList, 3,
+    kFable2MorphResolveDest, xenos::kMaxColorRenderTargets - 1,
+    xenos::ColorFormat::k_8_8_8_8, kFable2MorphResolveDest));
 static_assert(!IsFable2MorphResolveSignature(
-    0x4D5307F1, xenos::PrimitiveType::kRectangleList, 3, 0x12704000,
-    xenos::kMaxColorRenderTargets, xenos::ColorFormat::k_8_8_8_8));
+    0x4D5307F1, xenos::PrimitiveType::kRectangleList, 3,
+    kFable2MorphResolveDest, xenos::kMaxColorRenderTargets,
+    xenos::ColorFormat::k_8_8_8_8, kFable2MorphResolveDest));
+// A non-matching destination is rejected, unless the address filter is off.
+static_assert(!IsFable2MorphResolveSignature(
+    0x4D5307F1, xenos::PrimitiveType::kRectangleList, 3, 0x12700000, 0,
+    xenos::ColorFormat::k_8_8_8_8, kFable2MorphResolveDest));
+static_assert(IsFable2MorphResolveSignature(
+    0x4D5307F1, xenos::PrimitiveType::kRectangleList, 3, 0x12700000, 0,
+    xenos::ColorFormat::k_8_8_8_8, 0));
+// The rest of the signature still applies when the address filter is off.
+static_assert(!IsFable2MorphResolveSignature(
+    0x4D5307F1, xenos::PrimitiveType::kTriangleList, 3, 0x12700000, 0,
+    xenos::ColorFormat::k_8_8_8_8, 0));
 static_assert(SelectReadbackResolveMode(ReadbackResolveMode::kDisabled, false,
                                         false) ==
               ReadbackResolveMode::kDisabled);
@@ -223,14 +259,124 @@ bool CommandProcessor::IsFable2SelectiveReadbackResolve() const {
       kernel_state_->title_id(), draw_initiator.prim_type,
       draw_initiator.num_indices,
       (*register_file_)[XE_GPU_REG_RB_COPY_DEST_BASE],
-      copy_control.copy_src_select, copy_dest_info.copy_dest_format);
+      copy_control.copy_src_select, copy_dest_info.copy_dest_format,
+      uint32_t(cvars::fable2_selective_readback_resolve_dest));
 }
 
-ReadbackResolveMode CommandProcessor::GetEffectiveReadbackResolveMode() const {
+namespace {
+
+const char* GetReadbackResolveSkipReasonName(ReadbackResolveSkipReason reason) {
+  switch (reason) {
+    case ReadbackResolveSkipReason::kMemoryNotWritable:
+      return "the destination guest memory is not committed and writable";
+    case ReadbackResolveSkipReason::kDestination128bpp:
+      return "the destination is 128bpp, unsupported by the downscale shader";
+    case ReadbackResolveSkipReason::kUnalignedDestination:
+      return "the destination is not aligned to the scaled addressing group "
+             "size";
+    case ReadbackResolveSkipReason::kNoWholeTiles:
+      return "the written extent is smaller than one 32x32 tile";
+    case ReadbackResolveSkipReason::kOutsideScaledRange:
+      return "the written extent is outside the current scaled resolve range";
+    case ReadbackResolveSkipReason::kNoScaledBuffer:
+      return "there is no current scaled resolve buffer";
+    case ReadbackResolveSkipReason::kBufferAllocationFailed:
+      return "a readback buffer could not be allocated";
+    default:
+      return "an unknown reason";
+  }
+}
+
+}  // namespace
+
+void CommandProcessor::ReportReadbackResolveSkip(
+    ReadbackResolveSkipReason reason, uint32_t written_address,
+    uint32_t written_length) {
+  // The first occurrence of each reason says it's happening; after that, one
+  // line per interval says it never stopped, without flooding a gameplay log.
+  static constexpr uint64_t kRepeatLogInterval = 600;
+  uint64_t& count = readback_resolve_skip_counts_[size_t(reason)];
+  ++count;
+  if (count != 1 && count % kRepeatLogInterval) {
+    return;
+  }
+  bool is_fable2_selective = IsFable2SelectiveReadbackResolve();
+  XELOGW(
+      "Resolve readback to 0x{:08X} ({} bytes) skipped because {}{} "
+      "(occurrence {})",
+      written_address, written_length, GetReadbackResolveSkipReasonName(reason),
+      is_fable2_selective ? " - this is the Fable II morph resolve, so the "
+                            "player and dog textures will not be updated"
+                          : "",
+      count);
+}
+
+void CommandProcessor::LogFable2Resolve() {
+  if (!cvars::fable2_log_resolves || kernel_state_->title_id() != 0x4D5307F1) {
+    return;
+  }
+
+  const reg::VGT_DRAW_INITIATOR draw_initiator =
+      register_file_->Get<reg::VGT_DRAW_INITIATOR>();
+  const reg::RB_COPY_CONTROL copy_control =
+      register_file_->Get<reg::RB_COPY_CONTROL>();
+  const reg::RB_COPY_DEST_INFO copy_dest_info =
+      register_file_->Get<reg::RB_COPY_DEST_INFO>();
+  const reg::RB_SURFACE_INFO surface_info =
+      register_file_->Get<reg::RB_SURFACE_INFO>();
+  const reg::RB_COPY_DEST_PITCH copy_dest_pitch =
+      register_file_->Get<reg::RB_COPY_DEST_PITCH>();
+  uint32_t copy_dest_base = (*register_file_)[XE_GPU_REG_RB_COPY_DEST_BASE];
+
+  // Deduplicate on everything that identifies the resolve, so a per-frame
+  // resolve appears once rather than thousands of times.
+  uint64_t signature = (uint64_t(copy_dest_base) << 32) ^
+                       (uint64_t(uint32_t(draw_initiator.prim_type)) << 24) ^
+                       (uint64_t(draw_initiator.num_indices) << 8) ^
+                       (uint64_t(copy_control.copy_src_select) << 4) ^
+                       uint64_t(uint32_t(copy_dest_info.copy_dest_format));
+  if (!logged_fable2_resolve_signatures_.insert(signature).second) {
+    return;
+  }
+
+  bool matches = IsFable2SelectiveReadbackResolve();
+  XELOGI(
+      "Fable II resolve: dest 0x{:08X} {}x{} prim {} indices {} src_select {} "
+      "dest_format {} surface_pitch {} msaa {}{}",
+      copy_dest_base, uint32_t(copy_dest_pitch.copy_dest_pitch),
+      uint32_t(copy_dest_pitch.copy_dest_height),
+      uint32_t(draw_initiator.prim_type), uint32_t(draw_initiator.num_indices),
+      uint32_t(copy_control.copy_src_select),
+      uint32_t(copy_dest_info.copy_dest_format),
+      uint32_t(surface_info.surface_pitch), uint32_t(surface_info.msaa_samples),
+      matches ? " <- matches the selective morph signature" : "");
+}
+
+void CommandProcessor::ReportFable2SelectiveReadbackCompleted(
+    uint32_t written_address, uint32_t written_length) {
+  if (fable2_selective_readback_resolve_delivered_ ||
+      !IsFable2SelectiveReadbackResolve()) {
+    return;
+  }
+  fable2_selective_readback_resolve_delivered_ = true;
+  XELOGI(
+      "Fable II selective readback delivered the morph resolve at "
+      "0x{:08X} ({} bytes) to the guest",
+      written_address, written_length);
+}
+
+ReadbackResolveMode CommandProcessor::GetEffectiveReadbackResolveMode() {
   ReadbackResolveMode configured_mode = GetReadbackResolveMode();
   bool selective_resolve =
       configured_mode == ReadbackResolveMode::kDisabled &&
       IsFable2SelectiveReadbackResolve();
+  if (selective_resolve && !fable2_selective_readback_resolve_matched_) {
+    fable2_selective_readback_resolve_matched_ = true;
+    XELOGI(
+        "Fable II morph resolve signature matched at destination 0x{:08X} - "
+        "selective readback is engaged",
+        (*register_file_)[XE_GPU_REG_RB_COPY_DEST_BASE]);
+  }
   return SelectReadbackResolveMode(
       configured_mode, selective_resolve,
       cvars::fable2_selective_readback_resolve_fast);

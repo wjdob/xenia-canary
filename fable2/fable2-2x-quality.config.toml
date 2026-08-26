@@ -354,6 +354,8 @@ time_scalar = 1                                   	# Scalar used to speed or slo
 ac6_ground_fix = false                            	# This fixes(hide) issues with black ground in AC6. Use only in AC6. Might cause issues in other titles.
 fable2_selective_readback_resolve = false         	# Perform resolve readback only for Fable II's known player and dog morph-texture resolve. This ports the femtofork's narrow workaround while using Canary's current scaled GPU readback path. Intended for readback_resolve = "none"; use "fast" or "full" for general readback instead.
 fable2_selective_readback_resolve_fast = false    	# Use the previous frame's buffer for Fable II selective readback after the initial or cache-miss synchronization. This avoids the normal GPU queue stall, but the player and dog morph data may be one frame stale. Requires fable2_selective_readback_resolve and readback_resolve = "none".
+fable2_selective_readback_resolve_dest = 0x12704000	# Resolve destination address that fable2_selective_readback_resolve matches. The femtofork validated 0x12704000 on the GOTY/Platinum executable; other revisions may differ. Set to 0 to match any destination that satisfies the rest of the signature.
+fable2_log_resolves = false                       	# Log the register signature of every distinct resolve issued by Fable II. Use this to find the destination address of the player and dog morph-texture resolve for fable2_selective_readback_resolve_dest.
 
 
 [HID]

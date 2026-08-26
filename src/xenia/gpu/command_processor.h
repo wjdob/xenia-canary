@@ -18,6 +18,7 @@
 #include <queue>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "xenia/base/math.h"
@@ -41,6 +42,23 @@ enum class ReadbackResolveMode {
   kDisabled,  // No readback (none)
   kFast,      // Delayed sync, 1 frame behind (fast)
   kFull       // Immediate sync with GPU stall (full)
+};
+
+// Reasons the CPU readback of a resolve can be skipped after the resolve
+// itself has already been done on the GPU. Each backend bails out early in
+// several places; without naming them, a game that silently gets no readback
+// at all (such as Fable II's morph textures under resolution scaling) is
+// indistinguishable from one where readback is working.
+enum class ReadbackResolveSkipReason {
+  kMemoryNotWritable,
+  kDestination128bpp,
+  kUnalignedDestination,
+  kNoWholeTiles,
+  kOutsideScaledRange,
+  kNoScaledBuffer,
+  kBufferAllocationFailed,
+
+  kCount,
 };
 
 // Occlusion queries - ZPD report mode.
@@ -226,7 +244,37 @@ class CommandProcessor {
   // resolve by a stable register signature. Keep the title-specific check in
   // one place while letting each backend use its current readback path.
   bool IsFable2SelectiveReadbackResolve() const;
-  ReadbackResolveMode GetEffectiveReadbackResolveMode() const;
+  ReadbackResolveMode GetEffectiveReadbackResolveMode();
+
+  // Logs a resolve readback that was skipped despite being requested. The
+  // first occurrence of each reason is logged as a warning so it's visible at
+  // the default log level, then repeats are rate-limited to keep gameplay
+  // logs readable.
+  void ReportReadbackResolveSkip(ReadbackResolveSkipReason reason,
+                                 uint32_t written_address,
+                                 uint32_t written_length);
+
+  // Logs the register signature of every resolve issued by Fable II when
+  // fable2_log_resolves is set, deduplicated so the log stays a short table.
+  // Must be called before the readback mode is branched on: a resolve that
+  // doesn't match the signature never reaches the readback path, and those are
+  // exactly the ones needed to find the right destination address.
+  void LogFable2Resolve();
+
+  // One-shot notice that the selective readback actually delivered data to the
+  // guest, so "the signature never matched" and "the signature matched but the
+  // readback was skipped" can be told apart.
+  void ReportFable2SelectiveReadbackCompleted(uint32_t written_address,
+                                              uint32_t written_length);
+
+  // Readback diagnostics state. The registers are unchanged for the duration
+  // of a single IssueCopy, so the reporters re-check the Fable II signature
+  // themselves rather than threading a flag through both backends.
+  uint64_t readback_resolve_skip_counts_[size_t(
+      ReadbackResolveSkipReason::kCount)] = {};
+  std::unordered_set<uint64_t> logged_fable2_resolve_signatures_;
+  bool fable2_selective_readback_resolve_matched_ = false;
+  bool fable2_selective_readback_resolve_delivered_ = false;
 
   void WorkerThreadMain();
   virtual bool SetupContext() = 0;

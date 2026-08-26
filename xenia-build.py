@@ -168,12 +168,20 @@ def import_vs_environment():
     install_path = None
     env_tool_args = None
 
+    # Pass the arguments as a list: since Python 3.14 a relative program in a
+    # string command line is no longer resolved against the working directory
+    # on Windows, and the call fails with FileNotFoundError.
     vswhere = subprocess.check_output(
-        "tools/vswhere/vswhere.exe -version \"[17,)\" -latest -prerelease -format json -utf8 -products"
-        " Microsoft.VisualStudio.Product.Enterprise"
-        " Microsoft.VisualStudio.Product.Professional"
-        " Microsoft.VisualStudio.Product.Community"
-        " Microsoft.VisualStudio.Product.BuildTools",
+        [
+            os.path.join(self_path, "tools", "vswhere", "vswhere.exe"),
+            "-version", "[17,)", "-latest", "-prerelease",
+            "-format", "json", "-utf8",
+            "-products",
+            "Microsoft.VisualStudio.Product.Enterprise",
+            "Microsoft.VisualStudio.Product.Professional",
+            "Microsoft.VisualStudio.Product.Community",
+            "Microsoft.VisualStudio.Product.BuildTools",
+        ],
         encoding="utf-8",
     )
     if vswhere:
@@ -2087,15 +2095,19 @@ class DevenvCommand(Command):
                 }
                 try:
                     vswhere_out = subprocess.check_output(
-                        "tools/vswhere/vswhere.exe"
-                        ' -version "[17,)" -latest -prerelease'
-                        " -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64"
-                        " -format json -utf8"
-                        " -products"
-                        " Microsoft.VisualStudio.Product.Enterprise"
-                        " Microsoft.VisualStudio.Product.Professional"
-                        " Microsoft.VisualStudio.Product.Community"
-                        " Microsoft.VisualStudio.Product.BuildTools",
+                        [
+                            os.path.join(self_path, "tools", "vswhere",
+                                         "vswhere.exe"),
+                            "-version", "[17,)", "-latest", "-prerelease",
+                            "-requires",
+                            "Microsoft.VisualStudio.Component.VC.Tools.ARM64",
+                            "-format", "json", "-utf8",
+                            "-products",
+                            "Microsoft.VisualStudio.Product.Enterprise",
+                            "Microsoft.VisualStudio.Product.Professional",
+                            "Microsoft.VisualStudio.Product.Community",
+                            "Microsoft.VisualStudio.Product.BuildTools",
+                        ],
                         encoding="utf-8",
                     )
                     arm64_vs_list = jsonloads(vswhere_out) if vswhere_out else []

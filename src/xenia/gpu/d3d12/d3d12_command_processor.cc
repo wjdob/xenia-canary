@@ -3175,6 +3175,7 @@ bool D3D12CommandProcessor::IssueCopy() {
   if (!BeginSubmission(true)) {
     return false;
   }
+  LogFable2Resolve();
   ReadbackResolveMode readback_mode = GetEffectiveReadbackResolveMode();
   if (readback_mode == ReadbackResolveMode::kDisabled) {
     uint32_t written_address, written_length;
@@ -3216,6 +3217,8 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath(
     }
   }
   if (!memory_accessible) {
+    ReportReadbackResolveSkip(ReadbackResolveSkipReason::kMemoryNotWritable,
+                              written_address, written_length);
     return true;
   }
 
@@ -3237,9 +3240,8 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath(
     if (downscale_pixel_size_log2 > 3) {
       // 128bpp - not supported by the tiled scaled addressing reversal in the
       // downscale shader.
-      XELOGGPU(
-          "Skipping readback of a resolution-scaled resolve to a 128bpp "
-          "destination - not supported by the downscale shader");
+      ReportReadbackResolveSkip(ReadbackResolveSkipReason::kDestination128bpp,
+                                written_address, written_length);
       return true;
     }
     // The scaled addressing is periodic per guest group - the written extent
@@ -3247,15 +3249,16 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath(
     // are 32x32-tile-aligned, so this normally holds).
     uint32_t group_bytes_log2 = downscale_pixel_size_log2 <= 2 ? 7 : 6;
     if (written_address & ((UINT32_C(1) << group_bytes_log2) - 1)) {
-      XELOGGPU(
-          "Skipping readback of a resolution-scaled resolve to 0x{:08X} - the "
-          "destination is not aligned to the scaled addressing group size",
-          written_address);
+      ReportReadbackResolveSkip(
+          ReadbackResolveSkipReason::kUnalignedDestination, written_address,
+          written_length);
       return true;
     }
     uint32_t tile_bytes = (32 * 32) << downscale_pixel_size_log2;
     downscale_tile_count = written_length / tile_bytes;
     if (!downscale_tile_count) {
+      ReportReadbackResolveSkip(ReadbackResolveSkipReason::kNoWholeTiles,
+                                written_address, written_length);
       return true;
     }
     if (written_length % tile_bytes) {
@@ -3280,15 +3283,15 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath(
     if (!range_length_scaled || scaled_start < range_start_scaled ||
         scaled_start + scaled_length >
             range_start_scaled + range_length_scaled) {
-      XELOGGPU(
-          "Skipping readback of a resolution-scaled resolve to 0x{:08X} - the "
-          "written extent is not within the current scaled resolve range",
-          written_address);
+      ReportReadbackResolveSkip(ReadbackResolveSkipReason::kOutsideScaledRange,
+                                written_address, written_length);
       return true;
     }
     downscale_source_buffer =
         texture_cache_->GetCurrentScaledResolveBufferResource();
     if (!downscale_source_buffer) {
+      ReportReadbackResolveSkip(ReadbackResolveSkipReason::kNoScaledBuffer,
+                                written_address, written_length);
       return true;
     }
     downscale_source_offset =
@@ -3323,6 +3326,9 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath(
       rb.sizes[write_index] = size;
     } else {
       XELOGE("Failed to create a {} MB readback buffer", size >> 20);
+      ReportReadbackResolveSkip(
+          ReadbackResolveSkipReason::kBufferAllocationFailed, written_address,
+          written_length);
       return true;
     }
   }
@@ -3330,9 +3336,10 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath(
   uint32_t read_index = readback_mode == ReadbackResolveMode::kFast
                             ? 1 - write_index
                             : write_index;
-  bool read_cache_miss = readback_mode == ReadbackResolveMode::kFast &&
-                         (rb.buffers[read_index] == nullptr ||
-                          readback_length > rb.sizes[read_index]);
+  bool read_cache_miss =
+      readback_mode == ReadbackResolveMode::kFast &&
+      (rb.buffers[read_index] == nullptr || !rb.submissions[read_index] ||
+       readback_length > rb.sizes[read_index]);
 
   if (is_scaled) {
     // Scaled path: downscale on the GPU, then copy the 1x data to the
@@ -3359,6 +3366,9 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath(
         resolve_downscale_buffer_size_ = size;
       } else {
         XELOGE("Failed to create a {} MB resolve downscale buffer", size >> 20);
+        ReportReadbackResolveSkip(
+            ReadbackResolveSkipReason::kBufferAllocationFailed, written_address,
+            written_length);
         return true;
       }
     }
@@ -3445,6 +3455,9 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath(
         readback_length);
   }
 
+  // The copy into this slot completes with the submission it was recorded in.
+  rb.submissions[write_index] = GetCurrentSubmission();
+
   if (readback_mode != ReadbackResolveMode::kFast) {
     // Wait for GPU to finish (accurate but slow)
     if (!AwaitAllQueueOperationsCompletion()) {
@@ -3457,6 +3470,12 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath(
     if (!AwaitAllQueueOperationsCompletion()) {
       return true;
     }
+  } else if (rb.submissions[read_index] > GetCompletedSubmission()) {
+    // The previous frame's buffer is only safe to map once the submission that
+    // wrote it has completed. That submission is already closed, so this is
+    // normally free - but without it, a GPU running several frames behind
+    // hands the guest a torn or stale buffer.
+    CheckSubmissionCompletion(rb.submissions[read_index]);
   }
 
   ID3D12Resource* read_source = rb.buffers[read_index];
@@ -3472,6 +3491,7 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath(
       memory::vastcpy(physaddr, (uint8_t*)readback_mapping, readback_length);
       D3D12_RANGE readback_write_range = {};
       read_source->Unmap(0, &readback_write_range);
+      ReportFable2SelectiveReadbackCompleted(written_address, readback_length);
     }
   }
   return true;

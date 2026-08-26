@@ -832,6 +832,10 @@ class VulkanCommandProcessor final : public CommandProcessor {
     VkBuffer buffers[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     VkDeviceMemory memories[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     uint32_t sizes[2] = {0, 0};
+    // Submission that recorded the copy into each slot. The delayed-sync path
+    // must not map a slot before its submission has completed - the frame
+    // boundary alone doesn't guarantee it when frames are queued up.
+    uint64_t submissions[2] = {0, 0};
     uint32_t current_index = 0;
     uint64_t last_used_frame = 0;
   };
