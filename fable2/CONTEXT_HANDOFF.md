@@ -2,11 +2,11 @@
 
 Last updated: 2026-08-25
 
-Status: Two rounds of instrumented gameplay testing are done. The femtofork
+Status: Three rounds of instrumented gameplay testing are done. The femtofork
 selective readback never runs, and global readback does not fix the morph
-textures either. The foliage halo and the texture flicker have been shown to be
-two independent bugs; the flicker is pinned to the RTV path and the halo is
-narrowed to two settings. See the diagnostic sections below.
+textures either. The foliage halo and the texture flicker are both explained by
+guest memory going stale at 2x when readback is off; a candidate no-cost fix
+(`draw_resolution_scale_threshold`) is identified but not yet tested.
 
 ## Start here
 
@@ -16,9 +16,11 @@ narrowed to two settings. See the diagnostic sections below.
   **not** the selective readback code, which never runs. Global readback has
   now been tested too and does not fix them either, so readback is not the
   mechanism and the femtofork port is dead weight.
-- The halo and the flicker are **two separate bugs**. The flicker is the RTV
-  render target path (ROV eliminates it). The halo is caused by either CAS or
-  `readback_resolve = "none"` — one run separates them.
+- The halo and the flicker both trace to **stale shared memory at 2x**: with
+  `readback_resolve = "none"`, guest memory behind a resolved surface is never
+  refreshed, and any texture fetch that falls back to it reads garbage. CAS has
+  been ruled out. Next test is `-ScaleThreshold 640`, which should fix both at
+  no cost.
 - The additional enabled patches were added manually and intentionally. Do not
   revert them as accidental cleanup.
 - Work lives on branch `fable2-custom` and is committed.
@@ -117,25 +119,65 @@ cache root, vibration and window height:
 | `postprocess_scaling_and_sharpening` | `""` (bilinear) | `"cas"` |
 | `readback_resolve` | `"fast"` | `"none"` |
 
-So the halo is caused by CAS or by having readback off. One run separates them:
+`-Mode A -Sharpening bilinear` was run: **the halo was still there**, along
+with the dog and texture flicker. CAS is ruled out, leaving
+`readback_resolve = "none"`.
+
+## Round 3: stale shared memory at 2x
+
+The mechanism that fits every observation:
+
+At 2x, a resolve writes the **scaled resolve buffer**, not guest-visible shared
+memory. Guest memory for that address is only refreshed if `readback_resolve`
+is on. When the texture cache later needs one of those surfaces and cannot
+serve it from the scaled resolve buffer — which is exactly what happens for the
+format-aliased destinations, since the buffer was written as `k_8_8_8_8` and is
+being fetched as `k_2_10_10_10` or vice versa — it falls back to shared memory
+and reads whatever stale bytes are there. That is the halo, and re-reading a
+different stale variant frame to frame is the flicker.
+
+It explains why `quality` (readback fast) is clean, why both Mode A variants
+are not, and why ROV helped the flicker: ROV changes how EDRAM aliasing is
+resolved, so fewer fetches take the broken fallback.
+
+### The cheap fix to try first
+
+`draw_resolution_scale_threshold` keeps render targets at or below a given
+surface pitch at native resolution, and
+[d3d12_command_processor.cc:3228](../src/xenia/gpu/d3d12/d3d12_command_processor.cc#L3228)
+confirms native resolves go **straight to shared memory** rather than the
+scaled buffer. So excluding the small surfaces makes the fallback read correct
+data with readback still off.
+
+Every affected surface is small. From the resolve table, the format-aliased
+post-process buffers have `surface_pitch` 160, 320, 560 and 640, and the
+character mip chains have 80, 160 and 320. The main scene is 1120 and 1280.
+A threshold of 640 covers all of them and leaves the scene at 2x:
 
 ```powershell
-.\fable2\run.ps1 -Mode A -Sharpening bilinear -Quiet 'C:\Users\wdob\Desktop\Fable 2\Fable 2 PLT.iso'
+.\fable2\run.ps1 -Mode A -ScaleThreshold 640 -Quiet 'C:\Users\wdob\Desktop\Fable 2\Fable 2 PLT.iso'
 ```
 
-- Halo **gone** → CAS is the cause. Per-channel sharpening overshoot on bright
-  sky behind dark leaves produces colour fringing, which fits the speckles.
-  The fix is to stop using CAS, or lower
-  `postprocess_ffx_cas_additional_sharpness`.
-- Halo **still there** → `readback_resolve = "none"` is the cause: with
-  readback off the guest memory backing those post-process buffers is never
-  updated, so anything that falls back to reading it gets stale garbage. The
-  fix is that Fable II simply must not run with readback disabled, which also
-  makes the `selective` profile wrong in principle.
+If this clears the halo **and** the flicker it is the best available outcome:
+correct, no readback stall, and *faster* than the current Mode A because those
+surfaces stop being rendered at 2x. Bloom and light shafts drop to native
+resolution, which is visually irrelevant for buffers that are blurred anyway.
 
-Confirm from the other direction with
-`-Profile quality -Sharpening cas`, which should reproduce the halo if CAS is
-responsible.
+If it only clears one of the two, try 320 and 1024 to bracket which surfaces
+matter.
+
+### The fallback fix
+
+```powershell
+.\fable2\run.ps1 -Mode A -Readback fast -Quiet 'C:\Users\wdob\Desktop\Fable 2\Fable 2 PLT.iso'
+```
+
+This is `quality` plus CAS, i.e. the configuration the user actually wants, and
+should be clean if the diagnosis holds. It costs a GPU downscale, a copy and a
+map per resolve, so compare its frame rate against the threshold run before
+choosing. Note that `"fast"` has been Canary's default since 2025-12-04 — the
+`"none"` in the `selective` profile is this fork's own deviation, introduced to
+support selective readback code that never ran.
 
 Note both profiles use different `cache_root` values, so they have separate
 shader caches. With `async_shader_compilation = false` that should not affect
