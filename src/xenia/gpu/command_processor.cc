@@ -95,6 +95,17 @@ DEFINE_uint64(
     "GPU");
 
 DEFINE_bool(
+    await_gpu_completion_per_frame, false,
+    "Wait for the GPU to go idle once at the end of every frame.\n"
+    "Some titles only render correctly when something forces a CPU-GPU "
+    "synchronization each frame, and would otherwise need readback_resolve = "
+    "\"full\" purely for the stall it happens to cause. This gives them one "
+    "stall per frame instead of one per resolve, which is far cheaper.\n"
+    "It costs frames-in-flight, so it lowers the ceiling on GPU-bound titles "
+    "that don't need it.",
+    "GPU");
+
+DEFINE_bool(
     log_resolves, false,
     "Log the register signature of every distinct resolve the title issues, "
     "deduplicated. Use it to find the destination addresses a title resolves "

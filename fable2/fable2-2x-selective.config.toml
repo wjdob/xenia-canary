@@ -248,6 +248,11 @@ readback_resolve_half_pixel_offset = false        	# When resolution scaling and
                                                   	# Both choices give a real rendered value, but they can disagree where geometry edges fall inside a pixel block.
                                                   	# This matters when the CPU reads the resolve as data instead of an image, such as for gamma correction readbacks, occlusion checks, and GPU buffers reused later in the frame.
 
+readback_resolve_range_length = 0                 	# Length in bytes of the readback_resolve_range_start region. 0 applies readback to every resolve, which is the default behaviour.
+readback_resolve_range_start = 0                  	# Guest address of the only region that readback_resolve applies to.
+                                                  	# Readback stalls the CPU on the GPU, and the cost scales with the number of resolves read back, not their size - so if a title only reads a few small resolve destinations back on the CPU, restricting readback to that region keeps the correctness and drops most of the cost.
+                                                  	# Has no effect unless readback_resolve_range_length is also set.
+
 render_target_path_d3d12 = "rtv"                  	# Render target emulation path to use on Direct3D 12.
                                                   	# Use: [any, rtv, rov]
                                                   	#  rtv:
@@ -309,6 +314,7 @@ force_convert_triangle_fans_to_lists = false      	# For host graphics API downl
 gamma_render_target_as_unorm16 = true             	# When the host can't write 8 bits per component pixels with piecewise linear gamma encoding directly with correct blending, use the 16-bit unsigned normalized format, if supported, for conceptually correct 8_8_8_8_GAMMA render target format blending in linear color space. Greatly increases accuracy for this format, but may result in render target copying costs if the game switches between 8_8_8_8_GAMMA and 8_8_8_8 views for the same EDRAM render target.
 half_pixel_offset = true                          	# Enable support of vertex half-pixel offset (D3D9 PA_SU_VTX_CNTL PIX_CENTER). Generally games are aware of the half-pixel offset, and having this enabled is the correct behavior (disabling this may significantly break post-processing in some games), but in certain games it might have been ignored, resulting in slight blurriness of UI textures, for instance, when they are read between texels rather than at texel centers, or the leftmost/topmost pixels may not be fully covered when MSAA is used with fullscreen passes.
 ignore_32bit_vertex_index_support = false         	# For host graphics API downlevel testing only (useful only for Qualcomm Adreno 4xx-level host GPU testing), force indirection or pre-masking and pre-swapping of 32-bit vertex indices as if the host only supports 24-bit indices.
+log_resolves = false                              	# Log the register signature of every distinct resolve the title issues, deduplicated. Use it to find the destination addresses a title resolves to, for instance to choose a readback_resolve_range_start/length.
 log_unscaled_resolve_textures = false             	# With resolution scaling, log textures whose guest memory was written by a scaled resolve but that can't be read from the scaled resolve buffer, so they are loaded from shared memory instead.
                                                   	# Shared memory only holds this data if readback_resolve is enabled, and even then at 1x, so these are the textures most likely to appear stale, wrong-coloured or flickering when resolution scaling is on.
 

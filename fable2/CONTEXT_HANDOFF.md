@@ -5,11 +5,11 @@ Last updated: 2026-08-25
 Status: Three rounds of instrumented gameplay testing are done. The femtofork
 selective readback never runs, and global readback does not fix the morph
 textures either. The foliage halo and the texture flicker are both explained by
-a guest-side feedback loop reading resolve results. `readback_resolve = "full"`
-is visually clean but costs half the frame rate (~10 FPS at 2x), and 1x barely
-helps - the cost is the number of sync stalls. A general readback destination
-range filter is now in; the open task is bisecting the region the guest
-actually reads.
+Fable II needing one CPU-GPU synchronization per frame. Range-filtered runs
+showed four disjoint regions each fixing it, so the readback *data* is
+irrelevant - `readback_resolve = "full"` was only ever an expensive way to buy
+the stall. `await_gpu_completion_per_frame` now does it directly; it is built
+but not yet tested in-game.
 
 ## Start here
 
@@ -24,10 +24,13 @@ actually reads.
   sync, `full` is clean. The `selective` profile now ships `"full"`. CAS and
   `draw_resolution_scale_threshold` are both ruled out — the threshold makes it
   far worse and must never be revisited.
-- `full` readback is clean but costs about half the frame rate, and 1x barely
-  helps, so the cost is the **number of stalls**. The fix is
-  `readback_resolve_range_start/length`, restricting readback to the region the
-  guest actually reads. `-Mode C` is the first candidate; bisect from there.
+- **The game needs one CPU-GPU sync per frame; the readback data is irrelevant.**
+  Four disjoint readback ranges each fixed it, including the character mip
+  chains, which cannot supply data that fixes a foliage halo. The new
+  `await_gpu_completion_per_frame` buys that stall once per frame instead of
+  once per resolve. **Untested in-game - that is the next run.**
+- Best clean 2x result so far is ~17-18 FPS. 2x will not reach the ~30 target;
+  1x plus a single per-frame stall is the configuration most likely to.
 - The femtofork selective-readback port has been **deleted**. No Fable-specific
   code remains in `src/xenia/gpu`.
 - The additional enabled patches were added manually and intentionally. Do not
@@ -362,6 +365,80 @@ What survives from that work, because it earned its place and is general:
   whole diagnosis possible, now for any title.
 - `log_unscaled_resolve_textures`.
 - The new readback range filter.
+
+## Round 7: it is the stall, not the data
+
+Six range-filtered runs at 2x:
+
+| Range | Dests in range | FPS | Visuals |
+|---|---|---|---|
+| `0x1B600000,0x800000` (Mode C default) | 5, all load-time only | ~19-20 | **halo + flicker** |
+| `0x1ED00000,0x100000` final frame buffer | 1 | ~17-18 | clean |
+| `0x1A100000,0x100000` luminance pair | 3 | ~17-18 | clean |
+| `0x19E00000,0x400000` HDR scene | 5 | ~13-14 | clean |
+| `0x12A00000,0x400000` post-process pyramid | 15 | ~12-13 | clean |
+| `0x12700000,0x300000` character mip chains | ~80 | ~12-13 | clean |
+
+Four **disjoint** regions each fix it completely. Reading back the character
+mip chains cannot possibly supply data that fixes a foliage halo, so this is
+not a data dependency at all.
+
+What every clean run shares is that at least one resolve *per frame* falls in
+the region, and the readback path calls `AwaitAllQueueOperationsCompletion()` —
+a full GPU idle. The one broken run, `0x1B600000`, contains only destinations
+resolved once at load, so nothing stalls during gameplay, and its ~19-20 FPS
+matches `readback_resolve = "none"` exactly.
+
+Frame rate tracks the number of resolves in range, confirming again that cost
+is per-stall.
+
+**So Fable II needs a CPU-GPU synchronization once per frame. The readback data
+is irrelevant; `readback_resolve = "full"` was only ever an accidental way of
+buying that stall, at a hundred times the necessary price.**
+
+## `await_gpu_completion_per_frame`
+
+A new general cvar waits for the GPU to go idle once at the end of each frame,
+in both backends. That is one stall per frame instead of one per resolve, and
+it needs no readback at all.
+
+```powershell
+.\fable2\run.ps1 -Mode A -Readback none -SyncPerFrame true -Quiet 'C:\Users\wdob\Desktop\Fable 2\Fable 2 PLT.iso'
+```
+
+Expected: clean, and at or above the ~17-18 FPS of the cheapest range-filtered
+run, because it skips the readback copy entirely. If it is clean, this is the
+answer for the title and readback can go back to `"none"`.
+
+If it is **not** clean, then the stall's *position within the frame* matters
+rather than merely happening once, and the cheapest correct configuration is
+the range filter on the final frame buffer:
+`-ReadbackRange "0x1ED00000,0x100000"`.
+
+### Then chase the frame rate at 1x
+
+The user's target is roughly 30 FPS, and 2x will not reach it either way — the
+best clean 2x result so far is ~17-18. 1x with `readback none` historically ran
+~31, so 1x plus a single per-frame stall is the configuration most likely to
+land near the target:
+
+```powershell
+.\fable2\run.ps1 -Mode B -Readback none -SyncPerFrame true -Quiet 'C:\Users\wdob\Desktop\Fable 2\Fable 2 PLT.iso'
+.\fable2\run.ps1 -Mode B -ReadbackRange "0x1ED00000,0x100000" -Quiet 'C:\Users\wdob\Desktop\Fable 2\Fable 2 PLT.iso'
+```
+
+Record both in [UAT_RESULTS.md](UAT_RESULTS.md), along with the 2x equivalents,
+so the quality-versus-frame-rate decision is made on numbers.
+
+### A caveat on the mechanism
+
+Knowing that a per-frame stall fixes it is not the same as knowing *why*. A
+missing synchronization somewhere in the RTV render target or texture path is
+the obvious suspect, and forcing an idle papers over it. It is a legitimate
+workaround, and cheap, but the underlying race is still unidentified — if a new
+rendering fault appears later, that race is the first place to look. A
+`xenia-gpu-d3d12-trace-viewer` capture (`-DXENIA_BUILD_MISC=ON`, **F4**) is the
+tool for it.
 
 ## Goal and machine
 

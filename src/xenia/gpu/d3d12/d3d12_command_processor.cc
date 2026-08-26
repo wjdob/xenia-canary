@@ -40,6 +40,7 @@ DEFINE_bool(d3d12_submit_on_primary_buffer_end, true,
             "D3D12");
 
 DECLARE_bool(clear_memory_page_state);
+DECLARE_bool(await_gpu_completion_per_frame);
 DECLARE_bool(readback_resolve_half_pixel_offset);
 
 namespace xe {
@@ -3865,6 +3866,12 @@ bool D3D12CommandProcessor::EndSubmission(bool is_swap) {
     // Submission already closed now, so minus 1.
     closed_frame_submissions_[(frame_current_++) % kQueueFrames] =
         GetCurrentSubmission() - 1;
+
+    // One stall per frame for titles that only render correctly when something
+    // forces a CPU-GPU synchronization, instead of one per resolve.
+    if (cvars::await_gpu_completion_per_frame) {
+      AwaitAllQueueOperationsCompletion();
+    }
 
     if (cache_clear_requested_ && AwaitAllQueueOperationsCompletion()) {
       cache_clear_requested_ = false;

@@ -31,6 +31,12 @@ param(
   [ValidateSet("", "bilinear", "cas", "fsr")]
   [string]$Sharpening = "",
 
+  # Wait for the GPU to go idle once at the end of each frame. Some titles only
+  # render correctly when something forces a CPU-GPU sync; this gives them one
+  # stall per frame instead of one per resolve.
+  [ValidateSet("", "true", "false")]
+  [string]$SyncPerFrame = "",
+
   # Log the register signature of every distinct resolve the title issues.
   [switch]$LogResolves,
 
@@ -120,6 +126,7 @@ if ($Sharpening) { $xeniaArguments += "--postprocess_scaling_and_sharpening=$Sha
 if ($RtPath) { $xeniaArguments += "--render_target_path_d3d12=$RtPath" }
 if ($ScaleThreshold -ge 0) { $xeniaArguments += "--draw_resolution_scale_threshold=$ScaleThreshold" }
 if ($GammaAsUnorm16) { $xeniaArguments += "--gamma_render_target_as_unorm16=$GammaAsUnorm16" }
+if ($SyncPerFrame) { $xeniaArguments += "--await_gpu_completion_per_frame=$SyncPerFrame" }
 if ($LogResolves) { $xeniaArguments += "--log_resolves=true" }
 if ($LogUnscaledTextures) { $xeniaArguments += "--log_unscaled_resolve_textures=true" }
 if ($LogLevel -ge 0) { $xeniaArguments += "--log_level=$LogLevel" }
