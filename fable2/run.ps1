@@ -43,6 +43,12 @@ param(
   [ValidateRange(-1, 3)]
   [int]$FramesInFlight = -1,
 
+  # Emulate guest 24-bit float depth exactly, as the ROV backend always does:
+  # depth_float24_convert_in_pixel_shader + depth_float24_round. Shadow-map
+  # striping ("acne") is a depth-precision artifact, so this is the first thing
+  # to try for it on the RTV path.
+  [switch]$ExactDepth24,
+
   # Log the register signature of every distinct resolve the title issues.
   [switch]$LogResolves,
 
@@ -134,6 +140,10 @@ if ($ScaleThreshold -ge 0) { $xeniaArguments += "--draw_resolution_scale_thresho
 if ($GammaAsUnorm16) { $xeniaArguments += "--gamma_render_target_as_unorm16=$GammaAsUnorm16" }
 if ($SyncPerFrame) { $xeniaArguments += "--await_gpu_completion_per_frame=$SyncPerFrame" }
 if ($FramesInFlight -ge 0) { $xeniaArguments += "--gpu_frames_in_flight=$FramesInFlight" }
+if ($ExactDepth24) {
+  $xeniaArguments += "--depth_float24_convert_in_pixel_shader=true"
+  $xeniaArguments += "--depth_float24_round=true"
+}
 if ($LogResolves) { $xeniaArguments += "--log_resolves=true" }
 if ($LogUnscaledTextures) { $xeniaArguments += "--log_unscaled_resolve_textures=true" }
 if ($LogLevel -ge 0) { $xeniaArguments += "--log_level=$LogLevel" }

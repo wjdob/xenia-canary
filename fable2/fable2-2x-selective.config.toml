@@ -210,6 +210,9 @@ gpu = "d3d12"                                     	# Graphics system. Use: [any,
 gpu_3d_to_2d_texture = true                       	# Handle shaders that sample 3D textures as 2D by creating a 2D texture from slice 0 of the guest memory.
 gpu_allow_invalid_fetch_constants = true          	# Allow texture and vertex fetch constants with invalid type - generally unsafe because the constant may contain completely invalid values, but may be used to bypass fetch constant type errors in certain games until the real reason why they're invalid is found.
 gpu_allow_invalid_upload_range = false            	# Allows games to read data from pages that are marked as no access.
+gpu_frames_in_flight = -1                         	# How many guest frames the CPU may run ahead of the GPU. -1 keeps the backend default (3).
+                                                  	# Lowering it to 1 forces a synchronization every frame, like await_gpu_completion_per_frame, but waits for the previous frame instead of a full GPU idle - so it is cheaper while still giving titles that need a per-frame sync point one. Values above the backend default are clamped.
+
 native_stencil_value_output = true                	# Use pixel shader stencil reference output where available for purposes like copying between render targets. Can be disabled for scalability testing, in this case, much more expensive drawing of 8 quads will be done.
 occlusion_query = "fast"                          	# Controls hardware occlusion query behavior for EVENT_WRITE_ZPD.
                                                   	# Used for effects like lens flares, object culling, and auto-exposure.

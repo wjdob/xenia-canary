@@ -14,6 +14,38 @@ every approach that looked promising and turned out to be wrong.
 
 ---
 
+## Update: upstream's EDRAM rework changed the picture
+
+This fork now includes upstream commit `437a7280c`
+*[GPU] Use EDRAM layout with a single sample addressing scheme*, which unifies
+1x/2x/4x sample addressing and rewrites the render-target ownership transfers.
+Its own message notes that the old layout "decodes intentionally aliased views
+into shuffled images" - which is the class of bug documented below.
+
+Measured on the merged tree **with the per-frame sync turned off**:
+
+| Configuration | FPS | Visuals |
+|---|---|---|
+| 1x + FSR (`-Mode B -SyncPerFrame false`) | **~31-37** | halo gone; residual flicker on the dog |
+| 2x + CAS (`-Mode A -SyncPerFrame false`) | ~19-20 | halo gone (one momentary blue tree); dog flicker |
+
+So the foliage halo is essentially fixed upstream, and the frame rate is well
+above where the workaround left it (1x was ~26-30 with the sync, 2x ~16-17).
+
+**What remains is a flicker on the dog** - black striping in a downward
+triangle from the belly toward the ground, more frequent when the camera moves.
+That reads as shadow-map acne, i.e. a depth-precision artifact. Note that ROV
+was the one setting that ever removed this flicker, and ROV forces
+`depth_float24_round` and `depth_float24_convert_in_pixel_shader`
+([d3d12_render_target_cache.cc:1033](src/xenia/gpu/d3d12/d3d12_render_target_cache.cc#L1033)),
+so those two on the RTV path are the obvious next test - `-ExactDepth24` on the
+launcher sets both. Fable II renders its shadow maps as 256x256 targets at 4x
+MSAA, which the resolve table shows plainly.
+
+Whether `await_gpu_completion_per_frame` is still needed at all after this merge
+is **not yet determined**. Everything below documents how the pre-merge
+conclusion was reached and remains accurate for that tree.
+
 ## The headline finding
 
 **Fable II needs one CPU-GPU synchronization per frame.**
@@ -255,6 +287,14 @@ See [fable2/README.md](fable2/README.md) for full detail.
 ```powershell
 .\xb.ps1 build --config=release
 .\fable2\run.ps1 -Mode B "D:\Games\Fable II.iso"   # recommended
+```
+
+If a build has to recompile the SPIR-V shaders, `VULKAN_SDK` must point at a
+Vulkan SDK **even when you only run D3D12** — otherwise the shader step fails
+with `FileNotFoundError`, because it falls back to bare tool names on `PATH`:
+
+```powershell
+$env:VULKAN_SDK = "C:\VulkanSDK\<version>"
 ```
 
 `-Mode B` is 1x with FSR upscaling, not a plain resolution drop. `-Mode A` is 2x

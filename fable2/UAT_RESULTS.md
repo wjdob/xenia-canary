@@ -21,7 +21,32 @@ Both profiles now ship `await_gpu_completion_per_frame = true` and
 **The 30 FPS target is reachable at 1x, not at 2x.** That is a hardware limit
 on the GTX 1660 Ti, not a remaining bug.
 
-## Measured
+## After merging upstream 437a7280c (EDRAM single-sample addressing)
+
+Same hardware and route, **per-frame sync turned off**:
+
+| Config | FPS | Visuals |
+|---|---|---|
+| 1x + FSR, `-SyncPerFrame false` | ~31-37 | halo gone; dog flicker remains |
+| 2x + CAS, `-SyncPerFrame false` | ~19-20 | halo gone (one momentary blue tree); dog flicker |
+
+The residual fault is black striping in a downward triangle from the dog's
+belly to the ground, worse when the camera moves - shadow-map acne. Fable II
+renders shadow maps as 256x256 at 4x MSAA.
+
+Not yet measured, and the questions that matter now:
+
+1. `-Mode B` with the sync **on** - does it fix the dog flicker? If not, the
+   sync has no remaining job and both profiles should set it back to `false`,
+   which is worth 5-7 FPS.
+2. `-Mode B -SyncPerFrame false -ExactDepth24` - forces the two depth-precision
+   settings ROV always uses. ROV was the only setting that ever removed this
+   flicker, so this is the prime suspect.
+3. `-Mode B -SyncPerFrame false -ExactDepth24` plus each half separately
+   (`depth_float24_round`, `depth_float24_convert_in_pixel_shader`) if the pair
+   works, to find which one matters.
+
+## Measured (before the upstream merge)
 
 GTX 1660 Ti laptop, i5-9300H, same outdoor route, patch preset P0.
 
