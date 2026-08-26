@@ -48,13 +48,11 @@ addressing may be an upstream bug in its own right.)
 What is actually known about this fault:
 
 - Present at 1x and 2x, with and without the per-frame sync.
-- **ROV removed it** - the only setting that ever has, measured before the
-  merge, not retested since.
 - `-ExactDepth24` makes it worse.
-- The one remaining thing ROV forces, `gamma_render_target_as_unorm16 = false`,
-  is untested.
+- Before the merge, **ROV removed it** - the only setting that ever has.
 
-Both were then tested, and **both failed**:
+The two remaining candidates, ROV itself and the last setting it forces, were
+then tested. **Both failed:**
 
 | Run | Result |
 |---|---|
@@ -68,8 +66,28 @@ and regressed the ROV path.** That is reproducible and worth reporting upstream
 independently of this game.
 
 So all three ROV-forced settings are ruled out, ROV itself is no longer a
-reference for correct behaviour, and the cvar-guessing avenue is exhausted. The
-next step is a frame capture - see below.
+reference for correct behaviour, and the cvar-guessing avenue is exhausted.
+
+### Capturing a frame instead
+
+Guessing at cvars identified the halo correctly but has produced nothing on the
+dog flicker across several rounds. A capture answers directly what a draw is
+doing:
+
+```powershell
+.\xb.ps1 build --config=release --cmake-define XENIA_BUILD_MISC=ON `
+    --target xenia-gpu-d3d12-trace-viewer --target xenia-app
+```
+
+The explicit targets matter: `XENIA_BUILD_MISC` also enables
+`xenia-ui-window-vulkan-demo`, which does not link upstream (unresolved kernel
+symbols) and would otherwise fail the whole build.
+
+Then run normally, line up a shot where the dog is visibly flickering, and press
+**F4**. The trace lands under `fable2/scratch/gpu/`. Open it with
+`build/bin/Windows/Release/xenia-gpu-d3d12-trace-viewer.exe` and step the frame
+to find the draw producing the black striping - which render target it writes,
+in what format, and what it samples.
 
 `await_gpu_completion_per_frame` has since been measured post-merge and **is no
 longer needed** - with it on, only the dog flicker remains, exactly as with it
