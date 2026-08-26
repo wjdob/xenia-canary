@@ -87,11 +87,19 @@ If the first line never appears, the signature is wrong: run with
 ## Experiment switches
 
 ```powershell
+.\fable2\run.ps1 -Mode A -Readback fast          # the profiles differ here
+.\fable2\run.ps1 -Mode A -Sharpening bilinear    # and here
 .\fable2\run.ps1 -Mode A -GammaAsUnorm16 false   # wrong colours on bright effects
 .\fable2\run.ps1 -Mode A -ScaleThreshold 80      # keep small render targets at 1x
 .\fable2\run.ps1 -Mode A -RtPath rov             # accuracy oracle, slower
 .\fable2\run.ps1 -Mode A -LogLevel 3             # everything, very slow
 ```
+
+`-Readback` and `-Sharpening` exist because the `quality` and `selective`
+profiles differ in exactly those two settings and nothing else that matters, so
+they are the way to hold one fixed while changing the other. Overrides are
+applied after the mode defaults, and Xenia's parser takes the last occurrence
+of a flag, so `-Mode B -Sharpening bilinear` does override Mode B's FSR.
 
 `rov` is the pixel-shader-interlock render backend. It is the diagnostic to
 reach for when an effect comes out the wrong colour: if the artifact disappears
@@ -111,10 +119,13 @@ Currently enabled: 600p Resolution, Skip intro videos (twice — redundant but
 intentional), 60 FPS, High Tick Rate, Unlock Website Items, Disable Texture
 Morphing, Disable MSAA, Unlock Collectors Edition Content.
 
-`Disable Texture Morphing` is what currently fixes the black hero and dog
-textures — not the selective readback code. It compromises morph appearance and
-leaves makeup bugged, so it is a workaround, not the goal. Keep it enabled until
-the diagnostics above show the readback delivering data.
+`Disable Texture Morphing` is what fixes the black hero and dog textures — not
+the selective readback code. Testing has shown the selective signature never
+matches, and that even global `readback_resolve = "fast"` leaves the hero and
+dog black, so readback is not the mechanism at all. Keep this patch enabled.
+
+Toggle morphing back on for testing with `.\fable2\patch-preset.ps1 -Morph on`,
+and restore with `-Morph off`.
 
 `Disable MSAA` and `600p Resolution` write 16 bytes apart in what is almost
 certainly the same render-config structure. `600p` exists to fix strobing under

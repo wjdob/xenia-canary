@@ -22,6 +22,15 @@ param(
   [ValidateSet("", "true", "false")]
   [string]$GammaAsUnorm16 = "",
 
+  # CPU readback of resolve results. The two profiles differ here, so this is
+  # how to hold it fixed while changing something else.
+  [ValidateSet("", "none", "fast", "full")]
+  [string]$Readback = "",
+
+  # Final-output resampling/sharpening. The two profiles also differ here.
+  [ValidateSet("", "bilinear", "cas", "fsr")]
+  [string]$Sharpening = "",
+
   # Log the register signature of every distinct Fable II resolve.
   [switch]$LogResolves,
 
@@ -78,14 +87,20 @@ if ($isUat) {
     $xeniaArguments += "--draw_resolution_scale_y=1"
     $xeniaArguments += "--postprocess_scaling_and_sharpening=fsr"
   }
+  # The selective morph signature has been shown never to match this build, so
+  # A/B/C all run with no readback at all unless -Readback overrides it. Don't
+  # describe them as differing in readback.
   $modeDescription = switch ($Mode) {
-    "A" { "2x + CAS, immediate selective readback" }
-    "B" { "1x + FSR, immediate selective readback" }
-    "C" { "2x + CAS, previous-frame selective readback" }
+    "A" { "2x + CAS" }
+    "B" { "1x + FSR" }
+    "C" { "2x + CAS, selective-fast flag set (currently inert)" }
   }
 }
 
-# Experiment overrides, applicable to both profile and UAT launches.
+# Experiment overrides, applicable to both profile and UAT launches. These come
+# after the mode block so they win over its defaults.
+if ($Readback) { $xeniaArguments += "--readback_resolve=$Readback" }
+if ($Sharpening) { $xeniaArguments += "--postprocess_scaling_and_sharpening=$Sharpening" }
 if ($RtPath) { $xeniaArguments += "--render_target_path_d3d12=$RtPath" }
 if ($ScaleThreshold -ge 0) { $xeniaArguments += "--draw_resolution_scale_threshold=$ScaleThreshold" }
 if ($GammaAsUnorm16) { $xeniaArguments += "--gamma_render_target_as_unorm16=$GammaAsUnorm16" }

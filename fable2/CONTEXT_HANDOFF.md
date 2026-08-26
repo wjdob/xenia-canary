@@ -2,22 +2,23 @@
 
 Last updated: 2026-08-25
 
-Status: The instrumented build has been run in-game. It showed that the
-femtofork selective readback signature never matches, so that code has never
-executed. The evidence also points at a concrete cause for the magenta/blue
-foliage halo and the texture flicker. See the diagnostic result below.
+Status: Two rounds of instrumented gameplay testing are done. The femtofork
+selective readback never runs, and global readback does not fix the morph
+textures either. The foliage halo and the texture flicker have been shown to be
+two independent bugs; the flicker is pinned to the RTV path and the halo is
+narrowed to two settings. See the diagnostic sections below.
 
 ## Start here
 
 - The user prefers Mode A's 2x image quality and wants a clean, stable target
   near 30 FPS on a GTX 1660 Ti laptop.
 - `Disable Texture Morphing` is what fixes the black hero and dog textures —
-  **not** the selective readback code, which has now been proven never to run.
-- The magenta/blue halo behind foliage and the random texture flicker are most
-  likely one bug: the post-process pyramid aliases `k_8_8_8_8` and
-  `k_2_10_10_10` views of the same memory.
-  Disabling the `Disable MSAA` patch alone did not fix the halo, which is
-  consistent — the aliasing has nothing to do with MSAA.
+  **not** the selective readback code, which never runs. Global readback has
+  now been tested too and does not fix them either, so readback is not the
+  mechanism and the femtofork port is dead weight.
+- The halo and the flicker are **two separate bugs**. The flicker is the RTV
+  render target path (ROV eliminates it). The halo is caused by either CAS or
+  `readback_resolve = "none"` — one run separates them.
 - The additional enabled patches were added manually and intentionally. Do not
   revert them as accidental cleanup.
 - Work lives on branch `fable2-custom` and is committed.
@@ -70,30 +71,78 @@ That is a bloom / light-shaft downsample pyramid, and the game writes the same
 scratch buffer as both packed-LDR and packed-HDR.
 
 Misinterpreting `k_2_10_10_10` as `k_8_8_8_8` scrambles channels in exactly the
-way the screenshot shows - a magenta and blue halo where a warm sun glow
-belongs - and serving whichever variant the cache happens to hold explains the
-random texture flicker in the same run. One root cause, both symptoms, and
-independent of the patch bundle.
+way the screenshot shows. This turned out to explain the flicker but not the
+halo — see below.
 
-### Next tests, in order
+## Round 2 results: two independent bugs, and readback is not the morph fix
 
-1. `-RtPath rov` - the decisive one. The pixel-shader-interlock backend handles
-   EDRAM format aliasing correctly where RTV has to fake the transfer. If the
-   halo and the flicker both go away, this is confirmed. Slow; a diagnostic,
-   not a shipping setting.
-2. `-Mode B` (1x) with everything else identical - separates resolution scaling
-   from format aliasing.
-3. `-GammaAsUnorm16 false` - cheaper and worth one run, though the aliasing
-   evidence now points away from the gamma path specifically.
-4. For the morph question, independent of the above:
-   `.\fable2\patch-preset.ps1 -Morph on` then `-Profile quality` (global
-   `readback_resolve = "fast"`). This is the only configuration that has ever
-   actually performed readback. If the hero and dog render correctly, readback
-   is what matters and a correct narrow signature can be built from the resolve
-   table. If they are still black, readback was never the mechanism and the
-   patch is the right answer.
+| Run | Halo | Flicker |
+|---|---|---|
+| `-Mode A -RtPath rov` (cas, readback none, ROV) | **yes** | **no** |
+| `-Profile quality` (no sharpening, readback fast, RTV) | **no** | **yes** |
 
-Restore afterwards with `.\fable2\patch-preset.ps1 -Preset P0 -Morph off`.
+The symptoms separate cleanly, so they are two different bugs.
+
+### Flicker: the RTV path
+
+ROV eliminated it. That matches the format-aliasing evidence directly — the
+pixel-shader-interlock backend handles EDRAM aliasing correctly where the RTV
+path has to fake the ownership transfer. ROV is far too slow to ship at 2x, so
+the useful outcome here is a narrowed RTV bug, not a setting to adopt.
+
+### The morph textures do not need readback
+
+`-Morph on` with the `quality` profile — global `readback_resolve = "fast"`,
+the only configuration that has ever actually performed a readback — still gave
+a **black hero and dog**. Readback is not the mechanism.
+
+That retires the entire femtofork premise. The selective-readback port cannot
+be fixed by correcting its signature, because even unconditional readback
+doesn't restore these textures. `Disable Texture Morphing` is the answer for
+now, and the dead `fable2_selective_readback_resolve*` code should be removed
+rather than left looking load-bearing.
+
+Worth one confirming run before deleting anything: `-Readback full` (immediate
+sync) rather than `fast`, with `-Morph on`. If that is also black, readback is
+conclusively irrelevant.
+
+### Halo: narrowed to two settings
+
+The `quality` profile did not show the halo. It differs from Mode A in exactly
+two respects — everything else in the two TOMLs is identical apart from the
+cache root, vibration and window height:
+
+| Setting | `quality` | `selective` / Mode A |
+|---|---|---|
+| `postprocess_scaling_and_sharpening` | `""` (bilinear) | `"cas"` |
+| `readback_resolve` | `"fast"` | `"none"` |
+
+So the halo is caused by CAS or by having readback off. One run separates them:
+
+```powershell
+.\fable2\run.ps1 -Mode A -Sharpening bilinear -Quiet 'C:\Users\wdob\Desktop\Fable 2\Fable 2 PLT.iso'
+```
+
+- Halo **gone** → CAS is the cause. Per-channel sharpening overshoot on bright
+  sky behind dark leaves produces colour fringing, which fits the speckles.
+  The fix is to stop using CAS, or lower
+  `postprocess_ffx_cas_additional_sharpness`.
+- Halo **still there** → `readback_resolve = "none"` is the cause: with
+  readback off the guest memory backing those post-process buffers is never
+  updated, so anything that falls back to reading it gets stale garbage. The
+  fix is that Fable II simply must not run with readback disabled, which also
+  makes the `selective` profile wrong in principle.
+
+Confirm from the other direction with
+`-Profile quality -Sharpening cas`, which should reproduce the halo if CAS is
+responsible.
+
+Note both profiles use different `cache_root` values, so they have separate
+shader caches. With `async_shader_compilation = false` that should not affect
+correctness, but it is a confound to keep in mind if a result looks odd.
+
+Restore the patch bundle with
+`.\fable2\patch-preset.ps1 -Preset P0 -Morph off`.
 
 ## Goal and machine
 
