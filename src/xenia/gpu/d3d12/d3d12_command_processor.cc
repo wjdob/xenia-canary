@@ -41,6 +41,7 @@ DEFINE_bool(d3d12_submit_on_primary_buffer_end, true,
 
 DECLARE_bool(clear_memory_page_state);
 DECLARE_bool(await_gpu_completion_per_frame);
+DECLARE_int32(gpu_frames_in_flight);
 DECLARE_bool(readback_resolve_half_pixel_offset);
 
 namespace xe {
@@ -3615,10 +3616,8 @@ bool D3D12CommandProcessor::BeginSubmission(bool is_guest_command) {
   // Check the fence - needed for all kinds of submissions (to reclaim transient
   // resources early) and specifically for frames (not to queue too many), and
   // await the availability of the current frame.
-  CheckSubmissionCompletion(
-      is_opening_frame
-          ? closed_frame_submissions_[frame_current_ % kQueueFrames]
-          : 0);
+  CheckSubmissionCompletion(is_opening_frame ? GetFrameThrottleAwaitSubmission()
+                                             : 0);
   // TODO(Triang3l): If failed to await (completed submission < awaited frame
   // submission), do something like dropping the draw command that wanted to
   // open the frame.
@@ -3756,6 +3755,19 @@ bool D3D12CommandProcessor::BeginSubmission(bool is_guest_command) {
   }
 
   return true;
+}
+
+uint64_t D3D12CommandProcessor::GetFrameThrottleAwaitSubmission() const {
+  uint64_t frames_in_flight = kQueueFrames;
+  int32_t configured = cvars::gpu_frames_in_flight;
+  if (configured > 0) {
+    frames_in_flight = std::min(uint64_t(configured), uint64_t(kQueueFrames));
+  }
+  if (frame_current_ < frames_in_flight) {
+    return 0;
+  }
+  return closed_frame_submissions_[(frame_current_ - frames_in_flight) %
+                                   kQueueFrames];
 }
 
 bool D3D12CommandProcessor::EndSubmission(bool is_swap) {

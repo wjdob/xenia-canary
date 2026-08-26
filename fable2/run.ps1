@@ -37,6 +37,12 @@ param(
   [ValidateSet("", "true", "false")]
   [string]$SyncPerFrame = "",
 
+  # How many frames the CPU may run ahead of the GPU. 1 forces a per-frame sync
+  # like -SyncPerFrame but waits for the previous frame rather than a full GPU
+  # idle, so it is cheaper. -1 keeps the backend default of 3.
+  [ValidateRange(-1, 3)]
+  [int]$FramesInFlight = -1,
+
   # Log the register signature of every distinct resolve the title issues.
   [switch]$LogResolves,
 
@@ -127,6 +133,7 @@ if ($RtPath) { $xeniaArguments += "--render_target_path_d3d12=$RtPath" }
 if ($ScaleThreshold -ge 0) { $xeniaArguments += "--draw_resolution_scale_threshold=$ScaleThreshold" }
 if ($GammaAsUnorm16) { $xeniaArguments += "--gamma_render_target_as_unorm16=$GammaAsUnorm16" }
 if ($SyncPerFrame) { $xeniaArguments += "--await_gpu_completion_per_frame=$SyncPerFrame" }
+if ($FramesInFlight -ge 0) { $xeniaArguments += "--gpu_frames_in_flight=$FramesInFlight" }
 if ($LogResolves) { $xeniaArguments += "--log_resolves=true" }
 if ($LogUnscaledTextures) { $xeniaArguments += "--log_unscaled_resolve_textures=true" }
 if ($LogLevel -ge 0) { $xeniaArguments += "--log_level=$LogLevel" }

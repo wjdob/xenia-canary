@@ -33,11 +33,11 @@ save into `fable2/content` only after backing it up.
 
 ## Profiles
 
-- `selective`: `readback_resolve = "full"` plus CAS. **This is the visually
-  correct configuration** — `"none"` gives a constant magenta halo behind
-  foliage and `"fast"` makes it strobe. A/B/C all use it. It is also slow.
-- `quality` (default): `readback_resolve = "fast"`, no sharpening. Faster, but
-  it strobes.
+Both ship `await_gpu_completion_per_frame = true` with `readback_resolve =
+"none"`. That per-frame CPU-GPU sync is what Fable II actually needs to render
+correctly — without it the light behind foliage goes magenta and textures
+flicker. They differ only in sharpening: `selective` uses CAS, `quality` uses
+none.
 
 The profile names are historical; "selective" no longer refers to anything.
 
@@ -56,9 +56,12 @@ the same enabled game patches:
 .\fable2\run.ps1 -Mode C "D:\Games\Fable II.iso" # 2x + CAS, readback narrowed
 ```
 
-A and B differ only in resolution and sharpening. Mode C is the performance
-candidate: the same as A, but with readback restricted to `0x1B600000 +
-0x800000` — the small destinations most likely to be what the guest reads back.
+**`-Mode B` is the recommended configuration: ~26-30 FPS, clean.** `-Mode A` is
+also clean but runs ~16-17 FPS — 2x cannot reach 30 on a GTX 1660 Ti, which is
+a hardware limit rather than a remaining bug. Mode B is 1x with FSR upscaling,
+so it is not a plain resolution drop.
+
+Mode C exists only for readback-range experiments and is no longer needed.
 
 Record results in [UAT_RESULTS.md](UAT_RESULTS.md). Always add `-Quiet` to
 measured runs — stdout logging is synchronous and distorts frame times.
@@ -98,7 +101,12 @@ In `build/bin/Windows/Release/xenia.log`:
 .\fable2\run.ps1 -Mode A -LogLevel 3                             # everything, very slow
 ```
 
-`-ReadbackRange` is the performance lever. `full` readback is visually correct
+`-SyncPerFrame` and `-FramesInFlight` control the per-frame synchronization the
+game needs; both profiles already enable it, so these are only for testing.
+`-FramesInFlight 1 -SyncPerFrame false` is the cheaper variant worth trying —
+it waits for the previous frame instead of a full GPU idle.
+
+`-ReadbackRange` is a readback performance lever, no longer needed here. `full` readback is visually correct
 but costs about half the frame rate, and the cost scales with the *number* of
 resolves read back rather than their size — so restricting readback to the one
 region the guest actually reads should keep the correctness cheaply. The

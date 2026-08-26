@@ -559,6 +559,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // Submission indices of frames that have already been submitted.
   uint64_t closed_frame_submissions_[kMaxFramesInFlight] = {};
 
+  // Submission that must complete before the next frame may be opened. The
+  // default lets the CPU run kMaxFramesInFlight ahead; gpu_frames_in_flight
+  // lowers that, which forces a synchronization point every frame for titles
+  // that need one.
+  uint64_t GetFrameThrottleAwaitSubmission() const;
+
   // <Submission where last used, resource>, sorted by the submission number.
   std::deque<std::pair<uint64_t, VkDeviceMemory>> destroy_memory_;
   std::deque<std::pair<uint64_t, VkBuffer>> destroy_buffers_;

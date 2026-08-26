@@ -38,6 +38,7 @@
 
 DECLARE_bool(clear_memory_page_state);
 DECLARE_bool(await_gpu_completion_per_frame);
+DECLARE_int32(gpu_frames_in_flight);
 DECLARE_bool(readback_resolve_half_pixel_offset);
 
 namespace xe {
@@ -4139,9 +4140,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
   // await the availability of the current frame. Also check whether the device
   // is still available, and whether the await was successful.
   uint64_t await_submission =
-      is_opening_frame
-          ? closed_frame_submissions_[frame_current_ % kMaxFramesInFlight]
-          : 0;
+      is_opening_frame ? GetFrameThrottleAwaitSubmission() : 0;
   CheckSubmissionCompletionAndDeviceLoss(await_submission);
   const uint64_t completed_submission = GetCompletedSubmission();
   if (device_lost_ || completed_submission < await_submission) {
@@ -4302,6 +4301,20 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
   }
 
   return true;
+}
+
+uint64_t VulkanCommandProcessor::GetFrameThrottleAwaitSubmission() const {
+  uint64_t frames_in_flight = kMaxFramesInFlight;
+  int32_t configured = cvars::gpu_frames_in_flight;
+  if (configured > 0) {
+    frames_in_flight =
+        std::min(uint64_t(configured), uint64_t(kMaxFramesInFlight));
+  }
+  if (frame_current_ < frames_in_flight) {
+    return 0;
+  }
+  return closed_frame_submissions_[(frame_current_ - frames_in_flight) %
+                                   kMaxFramesInFlight];
 }
 
 bool VulkanCommandProcessor::EndSubmission(bool is_swap) {

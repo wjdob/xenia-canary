@@ -573,6 +573,12 @@ class D3D12CommandProcessor final : public CommandProcessor {
   // Submission indices of frames that have already been submitted.
   uint64_t closed_frame_submissions_[kQueueFrames] = {};
 
+  // Submission that must complete before the next frame may be opened. The
+  // default lets the CPU run kQueueFrames ahead; gpu_frames_in_flight lowers
+  // that, which forces a synchronization point every frame for titles that
+  // need one.
+  uint64_t GetFrameThrottleAwaitSubmission() const;
+
   struct CommandAllocator {
     ID3D12CommandAllocator* command_allocator;
     uint64_t last_usage_submission;

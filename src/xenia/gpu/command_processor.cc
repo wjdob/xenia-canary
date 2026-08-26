@@ -105,6 +105,16 @@ DEFINE_bool(
     "that don't need it.",
     "GPU");
 
+DEFINE_int32(
+    gpu_frames_in_flight, -1,
+    "How many guest frames the CPU may run ahead of the GPU. -1 keeps the "
+    "backend default (3).\n"
+    "Lowering it to 1 forces a synchronization every frame, like "
+    "await_gpu_completion_per_frame, but waits for the previous frame instead "
+    "of a full GPU idle - so it is cheaper while still giving titles that need "
+    "a per-frame sync point one. Values above the backend default are clamped.",
+    "GPU");
+
 DEFINE_bool(
     log_resolves, false,
     "Log the register signature of every distinct resolve the title issues, "

@@ -2,14 +2,13 @@
 
 Last updated: 2026-08-26
 
-Status: Seven rounds of instrumented gameplay testing are done. The femtofork
+Status: Eight rounds of instrumented gameplay testing are done. The femtofork
 selective readback never runs, and global readback does not fix the morph
 textures either. The foliage halo and the texture flicker are both explained by
-Fable II needing one CPU-GPU synchronization per frame. Range-filtered runs
-showed four disjoint regions each fixing it, so the readback *data* is
-irrelevant - `readback_resolve = "full"` was only ever an expensive way to buy
-the stall. `await_gpu_completion_per_frame` now does it directly; it is built
-but not yet tested in-game.
+Fable II needing one CPU-GPU synchronization per frame, and that is now shipped
+as `await_gpu_completion_per_frame = true` in both profiles with readback off.
+`-Mode B` (1x + FSR) runs ~26-30 FPS clean, meeting the target. `-Mode A` (2x)
+is clean at ~16-17 and cannot reach 30 on this GPU.
 
 ## Start here
 
@@ -19,17 +18,17 @@ but not yet tested in-game.
   **not** the selective readback code, which never runs. Global readback has
   now been tested too and does not fix them either, so readback is not the
   mechanism and the femtofork port is dead weight.
-- `readback_resolve = "full"` is visually clean (`none` gives a constant halo,
-  `fast` makes it strobe at ~0.25 s with the dog in sync) but costs half the
-  frame rate. CAS and `draw_resolution_scale_threshold` are both ruled out — the
-  threshold makes it far worse and must never be revisited.
+- Readback is no longer used at all. CAS and `draw_resolution_scale_threshold`
+  are both ruled out — the threshold makes it far worse and must never be
+  revisited.
 - **The game needs one CPU-GPU sync per frame; the readback data is irrelevant.**
   Four disjoint readback ranges each fixed it, including the character mip
-  chains, which cannot supply data that fixes a foliage halo. The new
-  `await_gpu_completion_per_frame` buys that stall once per frame instead of
-  once per resolve. **Untested in-game - that is the next run.**
-- Best clean 2x result so far is ~17-18 FPS. 2x will not reach the ~30 target;
-  1x plus a single per-frame stall is the configuration most likely to.
+  chains, which cannot supply data that fixes a foliage halo.
+  `await_gpu_completion_per_frame = true` is now the default in both profiles,
+  with `readback_resolve = "none"`. **A plain `-Mode A` or `-Mode B` is
+  correct** - no flags to remember.
+- **`-Mode B` meets the target: ~26-30 FPS, clean.** `-Mode A` is clean at
+  ~16-17 and cannot reach 30 on a GTX 1660 Ti. That is hardware, not a bug.
 - The femtofork selective-readback port has been **deleted**. No Fable-specific
   code remains in `src/xenia/gpu`.
 - The additional enabled patches were added manually and intentionally. Do not
@@ -438,6 +437,60 @@ workaround, and cheap, but the underlying race is still unidentified — if a ne
 rendering fault appears later, that race is the first place to look. A
 `xenia-gpu-d3d12-trace-viewer` capture (`-DXENIA_BUILD_MISC=ON`, **F4**) is the
 tool for it.
+
+## Round 8: confirmed, and the target is met at 1x
+
+| Config | FPS | Visuals |
+|---|---|---|
+| `-Mode A` 2x + per-frame sync, no readback | ~16-17 | clean |
+| `-Mode B` 1x + per-frame sync, no readback | **~26-30** | clean |
+
+`await_gpu_completion_per_frame` reproduces what `readback_resolve = "full"`
+was doing, at a fraction of the price: at 1x it costs about 1-5 FPS against the
+~31 of no sync at all, versus ~13 with full readback. The readback machinery is
+no longer needed by this title at all.
+
+**Both profiles now ship `await_gpu_completion_per_frame = true` and
+`readback_resolve = "none"`**, so a plain `-Mode A` or `-Mode B` is correct with
+no flags to remember.
+
+### The quality decision is now a hardware fact
+
+2x tops out at ~16-17 FPS clean. That is not a remaining bug — the per-frame
+sync costs only 3-4 FPS there, and 2x rendering itself is what the GTX 1660 Ti
+cannot afford. The user prefers Mode A's image, but Mode A cannot reach 30 on
+this GPU. **Mode B is the configuration that meets the stated target.**
+
+Worth knowing that Mode B is 1x + FSR upscaling, so it is not a plain
+resolution drop — FSR reconstructs a good deal of the apparent sharpness.
+
+### Remaining levers, in order of expected value
+
+1. **`-FramesInFlight 1 -SyncPerFrame false`** — waits for the previous frame
+   rather than a full GPU idle, so it is a cheaper way to buy the same
+   per-frame sync point. If it still renders correctly it should recover a few
+   FPS in both modes, which matters because Mode B currently dips below 30.
+   `gpu_frames_in_flight` reuses Xenia's existing frame throttle, which already
+   awaits the frame 3 back; this just makes the depth configurable.
+2. **The 60 FPS patch.** Enabled before any measurement existed. At ~26-30 FPS
+   an unlocked target adds CPU and present work and can destabilise pacing.
+   Compare with `patch-preset.ps1` on **frame-time consistency**, not average.
+3. `texture_cache_memory_limit_hard = 512` — VRAM sat at 4.8 GB of 6 GB with
+   0.2 GB spilled.
+4. `async_shader_compilation = true` on a warm cache.
+
+### The underlying race is still unidentified
+
+A per-frame GPU idle fixing a rendering fault means something is missing a
+synchronization, most likely in the RTV render target or texture path — forcing
+an idle papers over it rather than fixing it. It is a cheap and legitimate
+workaround, but if a new rendering fault appears, that race is the first place
+to look. A `xenia-gpu-d3d12-trace-viewer` capture (`-DXENIA_BUILD_MISC=ON`,
+**F4**) is the tool for it.
+
+Note also that this is now a *general* Xenia setting, not a Fable II hack. Other
+titles with unexplained flicker or wrong-colour effects at any resolution scale
+are worth trying it on.
 
 ## Goal and machine
 
