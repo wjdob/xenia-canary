@@ -181,6 +181,13 @@ the game emits per-file I/O lines during play, so it was a real source of
 frame-time noise in every number recorded so far. **Always use `-Quiet` for
 measured runs.**
 
+It uses `Start-Process -Wait` instead, which joins `-ArgumentList` with spaces
+and does no quoting of its own. Every path in this workspace contains spaces,
+so the launcher quotes each argument per the Windows CRT rules before handing
+them over. Xenia silently ignores unrecognised flags, so a clean start is not
+evidence that a flag name is right — check the `CONFIG DUMP` in the log, which
+enumerates every registered cvar.
+
 ## Current intentional patch state
 
 The active patch file is

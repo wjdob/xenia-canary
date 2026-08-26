@@ -41,6 +41,18 @@ param(
   [string]$Target
 )
 
+# Start-Process joins -ArgumentList with spaces and does no quoting of its own,
+# and every path here contains spaces. Quote each argument per the Windows CRT
+# command-line rules so they survive as single tokens.
+function Format-NativeArgument([string]$Argument) {
+  if ($Argument -notmatch '[\s"]') { return $Argument }
+  # Double the backslashes that precede a quote, and escape the quote.
+  $escaped = [regex]::Replace($Argument, '(\\*)"', '$1$1\"')
+  # Double a trailing backslash run so it doesn't escape the closing quote.
+  $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
+  return '"' + $escaped + '"'
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $xenia = Join-Path $repoRoot "build\bin\Windows\Release\xenia_canary.exe"
 $isUat = $PSCmdlet.ParameterSetName -eq "UAT"
@@ -101,5 +113,6 @@ Write-Host "Run manifest: $manifest"
 
 # Start-Process -Wait keeps the emulator's stdout off the PowerShell pipeline;
 # piping it through the host serializes every log line and distorts frame times.
-$process = Start-Process -FilePath $xenia -ArgumentList $xeniaArguments -PassThru -Wait
+$quotedArguments = @($xeniaArguments | ForEach-Object { Format-NativeArgument $_ })
+$process = Start-Process -FilePath $xenia -ArgumentList $quotedArguments -PassThru -Wait
 exit $process.ExitCode
