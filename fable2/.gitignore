@@ -1,7 +1,14 @@
-/cache_fable2_*/
+# Emulator runtime state and caches.
+/cache*/
 /config/
 /content/
 /plugins/
 /scratch/
 /xenia-canary.config.toml
+/xconfig.settings
+/recent.toml
 /*.log
+
+# Working notes, not part of the published fork - the README carries the
+# findings. Keeps local game paths out of the repository too.
+/CONTEXT_HANDOFF.md
