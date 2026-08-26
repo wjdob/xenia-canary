@@ -54,11 +54,22 @@ What is actually known about this fault:
 - The one remaining thing ROV forces, `gamma_render_target_as_unorm16 = false`,
   is untested.
 
-Next: retest `-RtPath rov` post-merge to confirm the cause is unchanged, then
-`-Cvar gamma_render_target_as_unorm16=false`. If neither, the difference is
-deeper than any single cvar and a `xenia-gpu-d3d12-trace-viewer` capture of a
-flickering frame is the right tool - that has still never been done, and would
-likely have shortened this entire investigation.
+Both were then tested, and **both failed**:
+
+| Run | Result |
+|---|---|
+| `-RtPath rov` | **Halo is back**, heavy stutter, dog still flickers |
+| `-Cvar gamma_render_target_as_unorm16=false` | 28-41 FPS, halo gone, dog still flickers |
+
+The ROV result is worth flagging on its own. Before the merge, ROV was the only
+setting that removed the dog flicker and it left the halo alone; after the merge
+it does neither. **Upstream `437a7280c` appears to have improved the RTV path
+and regressed the ROV path.** That is reproducible and worth reporting upstream
+independently of this game.
+
+So all three ROV-forced settings are ruled out, ROV itself is no longer a
+reference for correct behaviour, and the cvar-guessing avenue is exhausted. The
+next step is a frame capture - see below.
 
 `await_gpu_completion_per_frame` has since been measured post-merge and **is no
 longer needed** - with it on, only the dog flicker remains, exactly as with it

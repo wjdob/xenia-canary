@@ -63,16 +63,42 @@ sample addressing would be an upstream bug in its own right.
 - The third thing ROV forces is `gamma_render_target_as_unorm16 = false`, and
   that is **untested**.
 
-Next, in order:
+Both were then run, and **both failed**:
 
-1. `-Mode B -RtPath rov` - does ROV still fix it post-merge? Establishes whether
-   the cause is unchanged. Slow, diagnostic only.
-2. `-Mode B -Cvar gamma_render_target_as_unorm16=false` - the one remaining ROV
-   difference.
-3. If neither: the fault is in what ROV emulates differently at a deeper level
-   than any single cvar, and a `xenia-gpu-d3d12-trace-viewer` capture of a
-   flickering frame is the right tool. That has still never been done and would
-   likely have shortened this whole investigation.
+| Run | FPS | Result |
+|---|---|---|
+| `-Mode B -RtPath rov` | heavy stutter | **Halo is back**, dog still flickers |
+| `-Mode B -Cvar gamma_render_target_as_unorm16=false` | 28-41 | halo gone, dog still flickers |
+
+The ROV result is the significant one. **Before the upstream merge, ROV was the
+only setting that removed the dog flicker, and it left the halo alone. After the
+merge it does neither — it reintroduces the halo and still flickers.** Upstream
+`437a7280c` evidently improved the RTV path and regressed the ROV path. That is
+a clean, reproducible observation and is worth reporting upstream on its own
+merits, independent of Fable II.
+
+Consequences here: all three settings ROV forces are now ruled out
+(`depth_float24_round` and `depth_float24_convert_in_pixel_shader` via
+`-ExactDepth24`, which made things worse; `gamma_render_target_as_unorm16` on
+its own, which changed nothing), and ROV itself is no longer a reference for
+correct behaviour. **The cvar-guessing avenue is exhausted.**
+
+### The only sensible next step is a frame capture
+
+```powershell
+.\xb.ps1 build --config=release --cmake-define XENIA_BUILD_MISC=ON
+.\fable2\run.ps1 -Mode B 'C:\path\to\Fable 2 PLT.iso'
+# line up a shot where the dog is visibly flickering, then press F4
+```
+
+The trace lands under `fable2/scratch/gpu/` (gitignored). Open it with
+`build/bin/Windows/Release/xenia-gpu-d3d12-trace-viewer.exe` and step the frame
+to find the draw that produces the black striping — which render target it
+writes, in what format, and what it samples.
+
+This should have been done far earlier. Cvar bisection identified the halo
+correctly but has produced nothing on the dog flicker, and a single capture
+answers questions that guessing cannot.
 
 ## Measured (before the upstream merge)
 
