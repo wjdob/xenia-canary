@@ -5,9 +5,9 @@ Last updated: 2026-08-25
 Status: Three rounds of instrumented gameplay testing are done. The femtofork
 selective readback never runs, and global readback does not fix the morph
 textures either. The foliage halo and the texture flicker are both explained by
-guest memory going stale at 2x when readback is off. CAS and
-`draw_resolution_scale_threshold` have been eliminated; enabling readback is
-the remaining candidate and is untested at 2x with CAS.
+the texture cache falling back to shared memory for surfaces a scaled resolve
+wrote. CAS and `draw_resolution_scale_threshold` are eliminated; enabling
+readback makes the fault intermittent rather than removing it.
 
 ## Start here
 
@@ -17,12 +17,12 @@ the remaining candidate and is untested at 2x with CAS.
   **not** the selective readback code, which never runs. Global readback has
   now been tested too and does not fix them either, so readback is not the
   mechanism and the femtofork port is dead weight.
-- The halo and the flicker both trace to **stale shared memory at 2x**: with
-  `readback_resolve = "none"`, guest memory behind a resolved surface is never
-  refreshed, and any texture fetch that falls back to it reads garbage. CAS and
-  `draw_resolution_scale_threshold` are both ruled out — the threshold makes it
-  far worse and must not be revisited. Turning readback on is the remaining
-  candidate.
+- The halo and the character-texture flicker are **one bug**: at 2x, a texture
+  whose format has no scaled load pipeline is read from shared memory instead
+  of the scaled resolve buffer. With readback off that data is stale; with
+  readback on it is 1x and one frame late, so the fault strobes instead of
+  sitting still. CAS and `draw_resolution_scale_threshold` are both ruled out —
+  the threshold makes it far worse and must never be revisited.
 - The additional enabled patches were added manually and intentionally. Do not
   revert them as accidental cleanup.
 - Work lives on branch `fable2-custom` and is committed.
@@ -182,41 +182,71 @@ A threshold of 640 covers all of them and leaves the scene at 2x:
 The idea was that this would clear the halo with no readback stall and run
 faster. The speed part held; the correctness part did not.
 
-## Where this leaves the halo
+## Round 4: readback on — the halo now strobes, in sync with the dog
 
-Every configuration tested so far, and the one variable that separates them:
+`-Mode A -Readback fast` changed the symptom rather than removing it. The
+magenta/blue **flickers** instead of sitting there constantly, the dog flickers
+**at the same time**, and the period is roughly 0.25 s.
 
-| Config | Halo | Flicker |
-|---|---|---|
-| Mode A — 2x, cas, readback **none**, RTV | yes | yes |
-| Mode A + ROV — readback **none** | yes | no |
-| Mode A + bilinear — readback **none** | yes | yes |
-| Mode A + `-ScaleThreshold 640` — readback **none** | catastrophic | — |
-| `quality` — 2x, bilinear, readback **fast**, RTV | **no** | yes |
+Two things follow:
 
-The only clean-halo run is the only one with readback on. Turning readback on
-is now the remaining candidate, and the run is also the target configuration:
+- Readback matters — it turned a constant fault into an intermittent one — but
+  it is not sufficient.
+- The halo and the character textures share one cause. Both are
+  render-to-texture surfaces, and they now fail together on a common cycle.
+
+### The fallback path, confirmed in code
+
+[texture_cache.cc:626](../src/xenia/gpu/texture_cache.cc#L626) only reads a
+texture out of the scaled resolve buffer when **all** of these hold:
+
+1. resolution scaling is on,
+2. the texture is tiled,
+3. `IsScaledResolveSupportedForFormat(key)` — which on D3D12
+   ([d3d12_texture_cache.cc:1338](../src/xenia/gpu/d3d12/d3d12_texture_cache.cc#L1338))
+   means a **scaled load pipeline exists for that texture format**.
+
+If any of them fails, `key.scaled_resolve` stays 0 and the texture is loaded
+from **shared memory** instead. Shared memory holds that data only when
+`readback_resolve` is on, and only at 1x. That is the fallback, and it is
+completely silent.
+
+### Next run: name the textures taking it
+
+A new `log_unscaled_resolve_textures` cvar logs exactly this case — a texture
+whose guest memory a scaled resolve wrote, that cannot be read back out of the
+scaled resolve buffer — deduplicated, with the reason.
 
 ```powershell
-.\fable2\run.ps1 -Mode A -Readback fast -Quiet 'C:\Users\wdob\Desktop\Fable 2\Fable 2 PLT.iso'
+.\fable2\run.ps1 -Mode A -Readback full -LogUnscaledTextures -Quiet 'C:\Users\wdob\Desktop\Fable 2\Fable 2 PLT.iso'
 ```
 
-This is `quality` plus CAS. It costs a GPU downscale, a copy and a map per
-resolve, so record the frame rate as well as the visuals — if it is clean, the
-remaining question is purely whether the cost is affordable, and `-Readback
-full` versus `fast` is the next dial.
+This run does two jobs at once.
 
-`"fast"` has been Canary's default since 2025-12-04. The `"none"` in the
-`selective` profile is this fork's own deviation, introduced to support
-selective readback code that never ran — so if this is the fix, the profile
-should simply stop deviating and the selective machinery should be deleted.
+`-Readback full` syncs immediately instead of using the previous frame, so it
+removes both the one-frame staleness and the hit/miss alternation that `fast`
+has:
 
-Note both profiles use different `cache_root` values, so they have separate
-shader caches. With `async_shader_compilation = false` that should not affect
-correctness, but it is a confound to keep in mind if a result looks odd.
+- Flicker **gone** (image possibly still wrong, but steady) → the cycle was
+  readback timing, and the remaining error is the 1x-versus-2x content
+  mismatch.
+- Flicker **unchanged** → timing is not the cycle, and something else is
+  invalidating and reloading these textures periodically.
 
-Restore the patch bundle with
-`.\fable2\patch-preset.ps1 -Preset P0 -Morph off`.
+Meanwhile the log names every texture on the fallback path. Look for:
+
+```
+Scaled-resolved memory at 0x... is being read as a NxM <format> texture from
+shared memory, not the scaled resolve buffer, because ...
+```
+
+If the character mip chains (`0x1270C000`-`0x12965000`) and the post-process
+pyramid (`0x12AE9000`, `0x12CAB000`, `0x12D41000`) show up there, the diagnosis
+is closed: those surfaces can never be correct at 2x on this path, and the
+options narrow to adding the missing scaled load pipeline for that format, or
+running at 1x.
+
+Do not use `-ScaleThreshold`; see the rejected section above.
 
 ## Goal and machine
 

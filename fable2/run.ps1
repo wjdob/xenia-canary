@@ -34,6 +34,11 @@ param(
   # Log the register signature of every distinct Fable II resolve.
   [switch]$LogResolves,
 
+  # Log textures that a scaled resolve wrote but that have to be read from
+  # shared memory instead of the scaled resolve buffer - the ones most likely
+  # to look stale or flicker at 2x.
+  [switch]$LogUnscaledTextures,
+
   # Resolve destination the selective morph readback matches. 0 matches any.
   [string]$ResolveDest = "",
 
@@ -105,6 +110,7 @@ if ($RtPath) { $xeniaArguments += "--render_target_path_d3d12=$RtPath" }
 if ($ScaleThreshold -ge 0) { $xeniaArguments += "--draw_resolution_scale_threshold=$ScaleThreshold" }
 if ($GammaAsUnorm16) { $xeniaArguments += "--gamma_render_target_as_unorm16=$GammaAsUnorm16" }
 if ($LogResolves) { $xeniaArguments += "--fable2_log_resolves=true" }
+if ($LogUnscaledTextures) { $xeniaArguments += "--log_unscaled_resolve_textures=true" }
 if ($ResolveDest) { $xeniaArguments += "--fable2_selective_readback_resolve_dest=$ResolveDest" }
 if ($LogLevel -ge 0) { $xeniaArguments += "--log_level=$LogLevel" }
 if ($Quiet) { $xeniaArguments += "--log_to_stdout=false" }

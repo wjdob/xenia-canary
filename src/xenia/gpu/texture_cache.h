@@ -17,6 +17,7 @@
 #include <memory>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "xenia/base/assert.h"
 #include "xenia/base/hash.h"
@@ -688,6 +689,9 @@ class TextureCache {
 
   // Global watch for scaled resolve data invalidation.
   SharedMemory::GlobalWatchHandle scaled_resolve_global_watch_handle_ = nullptr;
+
+  // Deduplication for log_unscaled_resolve_textures.
+  std::unordered_set<uint64_t> logged_unscaled_resolve_textures_;
 
   uint64_t current_submission_index_ = 0;
   uint64_t current_submission_time_ = 0;

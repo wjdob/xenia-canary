@@ -65,6 +65,15 @@ DEFINE_bool(tiled_shared_memory, true,
             "Enable tiled/sparse resources for efficient large address space "
             "support. Disable for graphics debugger compatibility.",
             "GPU.Debug");
+DEFINE_bool(
+    log_unscaled_resolve_textures, false,
+    "With resolution scaling, log textures whose guest memory was written by a "
+    "scaled resolve but that can't be read from the scaled resolve buffer, so "
+    "they are loaded from shared memory instead.\n"
+    "Shared memory only holds this data if readback_resolve is enabled, and "
+    "even then at 1x, so these are the textures most likely to appear stale, "
+    "wrong-coloured or flickering when resolution scaling is on.",
+    "GPU.Debug");
 
 namespace xe {
 namespace gpu {
@@ -638,6 +647,39 @@ TextureCache::Texture* TextureCache::FindOrCreateTexture(TextureKey key) {
              key.mip_page << 12,
              scaled_resolve_guest_layout.mips_total_extent_bytes))) {
       key.scaled_resolve = 1;
+    }
+  }
+
+  // A texture whose guest memory a scaled resolve wrote, but that can't be
+  // read back out of the scaled resolve buffer, is loaded from shared memory -
+  // which holds that data only if readback_resolve is on, and only at 1x. Name
+  // those explicitly: they're the ones that show up stale or flickering.
+  if (cvars::log_unscaled_resolve_textures && IsDrawResolutionScaled() &&
+      !key.scaled_resolve) {
+    texture_util::TextureGuestLayout guest_layout = key.GetGuestLayout();
+    if ((guest_layout.base.level_data_extent_bytes &&
+         IsRangeScaledResolved(key.base_page << 12,
+                               guest_layout.base.level_data_extent_bytes)) ||
+        (guest_layout.mips_total_extent_bytes &&
+         IsRangeScaledResolved(key.mip_page << 12,
+                               guest_layout.mips_total_extent_bytes))) {
+      // Deduplicate so a per-frame texture appears once rather than thousands
+      // of times.
+      uint64_t signature = (uint64_t(key.base_page) << 32) ^
+                           (uint64_t(key.mip_page) << 8) ^
+                           uint64_t(uint32_t(key.format));
+      if (logged_unscaled_resolve_textures_.insert(signature).second) {
+        const char* reason =
+            !key.tiled ? "the texture is linear, not tiled"
+                       : "no scaled load pipeline exists for this format";
+        XELOGW(
+            "Scaled-resolved memory at 0x{:08X} (mips 0x{:08X}) is being read "
+            "as a {}x{} {} texture from shared memory, not the scaled resolve "
+            "buffer, because {}. It will be stale unless readback_resolve is "
+            "enabled, and 1x even then.",
+            key.base_page << 12, key.mip_page << 12, key.GetWidth(),
+            key.GetHeight(), FormatInfo::GetName(key.format), reason);
+      }
     }
   }
 
