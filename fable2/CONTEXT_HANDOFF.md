@@ -2,58 +2,98 @@
 
 Last updated: 2026-08-25
 
-Status: The resolve readback path is now instrumented, the Mode C staleness
-risk is fixed, and the Release build passes. No gameplay UAT has been run
-against the instrumented build yet — that is the next step.
+Status: The instrumented build has been run in-game. It showed that the
+femtofork selective readback signature never matches, so that code has never
+executed. The evidence also points at a concrete cause for the magenta/blue
+foliage halo and the texture flicker. See the diagnostic result below.
 
 ## Start here
 
 - The user prefers Mode A's 2x image quality and wants a clean, stable target
   near 30 FPS on a GTX 1660 Ti laptop.
-- `Disable Texture Morphing` is what currently fixes the black hero and dog
-  textures — **not** the selective readback code. The femtofork port has never
-  been observed working. Finding out why is the open question.
-- A second artifact is under investigation: the light behind tree leaves
-  renders blue/pink. Disabling the `Disable MSAA` patch alone did not fix it.
-  Whether it predates the patch additions is unknown.
+- `Disable Texture Morphing` is what fixes the black hero and dog textures —
+  **not** the selective readback code, which has now been proven never to run.
+- The magenta/blue halo behind foliage and the random texture flicker are most
+  likely one bug: the post-process pyramid aliases `k_8_8_8_8` and
+  `k_2_10_10_10` views of the same memory.
+  Disabling the `Disable MSAA` patch alone did not fix the halo, which is
+  consistent — the aliasing has nothing to do with MSAA.
 - The additional enabled patches were added manually and intentionally. Do not
   revert them as accidental cleanup.
 - Work lives on branch `fable2-custom` and is committed.
 
-## First thing to run
+## Diagnostic result: the selective readback has never run
 
-The instrumentation answers the morph question in one launch:
+The instrumented run answered the morph question outright.
 
-```powershell
-.\fable2\run.ps1 -Mode A -LogResolves -Quiet 'C:\Users\wdob\Desktop\Fable 2\Fable 2 PLT.iso'
-```
+- **No `signature matched` line.** The femtofork's destination `0x12704000` is
+  not a resolve destination in this build at all.
+- **No skip reports.** The readback path was never even entered, which follows:
+  the signature didn't match, so the effective mode stayed `kDisabled`.
 
-Then search `build\bin\Windows\Release\xenia.log` for:
+Consequences that invalidate earlier conclusions:
 
-- `Fable II morph resolve signature matched` — the signature is being hit.
-- `Fable II selective readback delivered` — data actually reached the guest.
-- `Resolve readback to 0x... skipped because` — matched but dropped, with the
-  failing prerequisite named.
+1. `fable2_selective_readback_resolve` has been dead code the whole time. The
+   `selective` profile is behaviourally identical to plain
+   `readback_resolve = "none"`.
+2. **Modes A, B and C differ only in resolution and sharpening.** The
+   "immediate selective readback" and "previous-frame selective readback"
+   labels describe something that never happened, and the A-vs-C comparison the
+   old handoff kept asking for could never have shown a difference.
+3. The black hero and dog were always going to need the patch, because nothing
+   else was running.
 
-Three outcomes, three next steps:
+`-ResolveDest` cannot rescue this: the resolves near `0x1270xxxx` are
+`k_1_5_5_5`, and the signature also requires `k_8_8_8_8`. It is the wrong
+signature, not just the wrong address.
 
-1. **No `signature matched` line** — the destination is wrong. The
-   `Fable II resolve:` table that `-LogResolves` prints lists every distinct
-   resolve the game issues; pick the right destination and pass it via
-   `-ResolveDest` (cvar `fable2_selective_readback_resolve_dest`, `0` matches
-   any) without rebuilding.
-2. **Matched but skipped** — the reason names the failing prerequisite.
-   `the written extent is outside the current scaled resolve range` is the most
-   likely: the readback requires the written extent to lie inside the render
-   target cache's *current* scaled resolve range, which may simply not be made
-   current for this resolve.
-3. **Matched and delivered, textures still wrong** — suspect the downscale
-   shader's tile reversal for this destination format, or try
-   `readback_resolve_half_pixel_offset = true`.
+### What the game actually resolves
 
-Only once the hero and dog render correctly *without* the patch should
-`Disable Texture Morphing` be turned off, and that is the user's call — the
-patch also masks a separate makeup bug.
+`0x1270C000`-`0x12965000` holds about twenty 4-level mip chains
+(256x256 -> 128x128 -> 64x64 -> 32x32) in `k_1_5_5_5`, spaced 0x2B000 apart -
+exactly one 16bpp 256x256 mip chain each. These are the render-to-texture
+character textures, and they are the neighbourhood the femtofork was aiming at.
+
+### The lead worth chasing: format aliasing in the post-process pyramid
+
+Three destinations are resolved **at the same size with two different formats**:
+
+| Destination | Size | Formats |
+|---|---|---|
+| `0x12CAB000` | 576x300 | `k_8_8_8_8` and `k_2_10_10_10` |
+| `0x12D41000` | 640x360 | `k_8_8_8_8` and `k_2_10_10_10` |
+| `0x12AE9000` | 288x150 / 576x300 | `k_8_8_8_8` and `k_2_10_10_10` |
+| `0x12B16000` | 128x128 / 1120x600 | `k_8_8_8_8` and `k_8` |
+
+640x360 is half of 1280x720; 576x300 is half of 1120x600; 288x150 is a quarter.
+That is a bloom / light-shaft downsample pyramid, and the game writes the same
+scratch buffer as both packed-LDR and packed-HDR.
+
+Misinterpreting `k_2_10_10_10` as `k_8_8_8_8` scrambles channels in exactly the
+way the screenshot shows - a magenta and blue halo where a warm sun glow
+belongs - and serving whichever variant the cache happens to hold explains the
+random texture flicker in the same run. One root cause, both symptoms, and
+independent of the patch bundle.
+
+### Next tests, in order
+
+1. `-RtPath rov` - the decisive one. The pixel-shader-interlock backend handles
+   EDRAM format aliasing correctly where RTV has to fake the transfer. If the
+   halo and the flicker both go away, this is confirmed. Slow; a diagnostic,
+   not a shipping setting.
+2. `-Mode B` (1x) with everything else identical - separates resolution scaling
+   from format aliasing.
+3. `-GammaAsUnorm16 false` - cheaper and worth one run, though the aliasing
+   evidence now points away from the gamma path specifically.
+4. For the morph question, independent of the above:
+   `.\fable2\patch-preset.ps1 -Morph on` then `-Profile quality` (global
+   `readback_resolve = "fast"`). This is the only configuration that has ever
+   actually performed readback. If the hero and dog render correctly, readback
+   is what matters and a correct narrow signature can be built from the resolve
+   table. If they are still black, readback was never the mechanism and the
+   patch is the right answer.
+
+Restore afterwards with `.\fable2\patch-preset.ps1 -Preset P0 -Morph off`.
 
 ## Goal and machine
 
@@ -153,11 +193,14 @@ shader cache.
 
 | Launch | Internal rendering | Final processing | Matching morph readback |
 | --- | --- | --- | --- |
-| `-Profile quality` | 2x | No configured sharpening | Global fast readback; selective hack off |
-| `-Profile selective` | 2x | CAS | Immediate selective readback |
-| `-Mode A` | 2x | CAS | Immediate selective readback |
-| `-Mode B` | 1x | FSR | Immediate selective readback |
-| `-Mode C` | 2x | CAS | Previous-buffer selective fast readback |
+| `-Profile quality` | 2x | No configured sharpening | Global fast readback - the only mode that reads back anything |
+| `-Profile selective` | 2x | CAS | Intended selective; **never matches, so none** |
+| `-Mode A` | 2x | CAS | **None** (signature never matches) |
+| `-Mode B` | 1x | FSR | **None** (signature never matches) |
+| `-Mode C` | 2x | CAS | **None** (signature never matches) |
+
+Until the signature is corrected, A/B/C differ only in resolution and
+sharpening. Do not read an A-vs-C result as a readback comparison.
 
 All A/B/C launches force `apply_patches = true`, `vsync = true`,
 `framerate_limit = 0`, D3D12 RTV rendering, synchronous shader compilation, and
