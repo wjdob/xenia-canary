@@ -36,6 +36,13 @@ message(STATUS "Target architecture: XE_TARGET_AARCH64=${XE_TARGET_AARCH64} XE_T
 # Options
 option(XENIA_BUILD_TESTS "Build test suites" OFF)
 option(XENIA_BUILD_MISC "Build misc subprojects (trace viewers, shader compiler, vfs-dump, demos)" OFF)
+# GPU trace writing (F4 frame capture) is compiled out of release builds by
+# default. A debug build is far too slow to reproduce most rendering faults, so
+# allow forcing it on in release - upstream measures the cost at 0.4-0.6% CPU.
+option(XENIA_ENABLE_TRACE_WRITER "Enable GPU trace writing in release builds" OFF)
+if(XENIA_ENABLE_TRACE_WRITER)
+  add_compile_definitions(XE_ENABLE_TRACE_WRITER_INSTRUMENTATION=1)
+endif()
 
 # Toggle profiler
 add_compile_definitions(XE_OPTION_PROFILING=0)

@@ -21,10 +21,15 @@
 // function calls (even if they just immediately return) is 0.40-0.60% cpu time
 // total. with inlining they just bloat the caller and negatively impact
 // register allocation for the caller
+// Definable from the build so a release build can capture traces at playable
+// speed - a debug build is too slow to reproduce most rendering faults, and
+// the cost quoted above is negligible next to not being able to capture at all.
+#if !defined(XE_ENABLE_TRACE_WRITER_INSTRUMENTATION)
 #ifdef NDEBUG
 #define XE_ENABLE_TRACE_WRITER_INSTRUMENTATION 0
 #else
 #define XE_ENABLE_TRACE_WRITER_INSTRUMENTATION 1
+#endif
 #endif
 
 namespace xe {

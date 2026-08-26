@@ -116,3 +116,7 @@ node_modules/.bin/
 /cache0
 /devkit
 recent.toml
+
+# Emulator console settings written into the working directory by the GPU
+# trace viewer and trace dump, which have no storage root of their own.
+/xconfig.settings
