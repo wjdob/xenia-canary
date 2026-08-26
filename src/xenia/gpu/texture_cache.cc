@@ -656,6 +656,15 @@ TextureCache::Texture* TextureCache::FindOrCreateTexture(TextureKey key) {
   // those explicitly: they're the ones that show up stale or flickering.
   if (cvars::log_unscaled_resolve_textures && IsDrawResolutionScaled() &&
       !key.scaled_resolve) {
+    // Announce once that the check is live, so that finding nothing is
+    // evidence of nothing happening rather than of the flag not binding.
+    if (!logged_unscaled_resolve_diagnostic_active_) {
+      logged_unscaled_resolve_diagnostic_active_ = true;
+      XELOGW(
+          "log_unscaled_resolve_textures is active - any texture read from "
+          "shared memory instead of the scaled resolve buffer will be reported "
+          "below");
+    }
     texture_util::TextureGuestLayout guest_layout = key.GetGuestLayout();
     if ((guest_layout.base.level_data_extent_bytes &&
          IsRangeScaledResolved(key.base_page << 12,

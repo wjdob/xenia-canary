@@ -238,7 +238,7 @@ occlusion_query_saturation = 1                    	# Compress higher occlusion q
                                                   	# Values around 0.90 are a good starting point for subtle tuning.
 
 readback_memexport = false                        	# Read data written by memory export in shaders on the CPU. This may be needed in some games (but many only access exported data on the GPU, and this flag isn't needed to handle such behavior), but causes mid-frame synchronization, so it has a huge performance impact.
-readback_resolve = "none"                         	# Controls CPU readback of render-to-texture resolve results.
+readback_resolve = "full"                         	# Controls CPU readback of render-to-texture resolve results.
                                                   	#  fast: Read from previous frame (1 frame delay, no GPU stall, slight performance hit)
                                                   	#  full: Wait for GPU to finish (accurate but slow, GPU-CPU sync stall)
                                                   	#  none: Disable readback completely (some games render better without it)
@@ -309,6 +309,9 @@ force_convert_triangle_fans_to_lists = false      	# For host graphics API downl
 gamma_render_target_as_unorm16 = true             	# When the host can't write 8 bits per component pixels with piecewise linear gamma encoding directly with correct blending, use the 16-bit unsigned normalized format, if supported, for conceptually correct 8_8_8_8_GAMMA render target format blending in linear color space. Greatly increases accuracy for this format, but may result in render target copying costs if the game switches between 8_8_8_8_GAMMA and 8_8_8_8 views for the same EDRAM render target.
 half_pixel_offset = true                          	# Enable support of vertex half-pixel offset (D3D9 PA_SU_VTX_CNTL PIX_CENTER). Generally games are aware of the half-pixel offset, and having this enabled is the correct behavior (disabling this may significantly break post-processing in some games), but in certain games it might have been ignored, resulting in slight blurriness of UI textures, for instance, when they are read between texels rather than at texel centers, or the leftmost/topmost pixels may not be fully covered when MSAA is used with fullscreen passes.
 ignore_32bit_vertex_index_support = false         	# For host graphics API downlevel testing only (useful only for Qualcomm Adreno 4xx-level host GPU testing), force indirection or pre-masking and pre-swapping of 32-bit vertex indices as if the host only supports 24-bit indices.
+log_unscaled_resolve_textures = false             	# With resolution scaling, log textures whose guest memory was written by a scaled resolve but that can't be read from the scaled resolve buffer, so they are loaded from shared memory instead.
+                                                  	# Shared memory only holds this data if readback_resolve is enabled, and even then at 1x, so these are the textures most likely to appear stale, wrong-coloured or flickering when resolution scaling is on.
+
 mrt_edram_used_range_clamp_to_min = true          	# With host render targets, if multiple render targets are bound, estimate the EDRAM range modified in any of them to be not bigger than the distance between any two render targets in the EDRAM, rather than allowing the last one claim the rest of the EDRAM.
                                                   	# Has effect primarily on draws without viewport clipping.
                                                   	# Setting this to false results in higher accuracy in rare cases, but may increase the amount of copying that needs to be done sometimes.

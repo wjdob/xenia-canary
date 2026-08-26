@@ -5,9 +5,10 @@ Last updated: 2026-08-25
 Status: Three rounds of instrumented gameplay testing are done. The femtofork
 selective readback never runs, and global readback does not fix the morph
 textures either. The foliage halo and the texture flicker are both explained by
-the texture cache falling back to shared memory for surfaces a scaled resolve
-wrote. CAS and `draw_resolution_scale_threshold` are eliminated; enabling
-readback makes the fault intermittent rather than removing it.
+a guest-side feedback loop reading resolve results. `readback_resolve = "full"`
+produces a clean image at 2x; `fast` makes it strobe and `none` makes it
+constant. Correctness is settled - the open question is whether `full` is
+fast enough.
 
 ## Start here
 
@@ -17,12 +18,13 @@ readback makes the fault intermittent rather than removing it.
   **not** the selective readback code, which never runs. Global readback has
   now been tested too and does not fix them either, so readback is not the
   mechanism and the femtofork port is dead weight.
-- The halo and the character-texture flicker are **one bug**: at 2x, a texture
-  whose format has no scaled load pipeline is read from shared memory instead
-  of the scaled resolve buffer. With readback off that data is stale; with
-  readback on it is 1x and one frame late, so the fault strobes instead of
-  sitting still. CAS and `draw_resolution_scale_threshold` are both ruled out —
-  the threshold makes it far worse and must never be revisited.
+- **The halo and the flicker are fixed by `readback_resolve = "full"`.** `none`
+  gives a constant halo, `fast` makes it strobe at ~0.25 s with the dog in
+  sync, `full` is clean. The `selective` profile now ships `"full"`. CAS and
+  `draw_resolution_scale_threshold` are both ruled out — the threshold makes it
+  far worse and must never be revisited.
+- What is left is a **performance** question: no frame rate has been recorded
+  for any run yet.
 - The additional enabled patches were added manually and intentionally. Do not
   revert them as accidental cleanup.
 - Work lives on branch `fable2-custom` and is committed.
@@ -125,7 +127,7 @@ cache root, vibration and window height:
 with the dog and texture flicker. CAS is ruled out, leaving
 `readback_resolve = "none"`.
 
-## Round 3: stale shared memory at 2x
+## Round 3: stale shared memory at 2x (superseded by Round 5)
 
 The mechanism that fits every observation:
 
@@ -211,42 +213,80 @@ from **shared memory** instead. Shared memory holds that data only when
 `readback_resolve` is on, and only at 1x. That is the fallback, and it is
 completely silent.
 
-### Next run: name the textures taking it
+## Round 5: `readback_resolve = "full"` fixes both — the remaining question is cost
 
-A new `log_unscaled_resolve_textures` cvar logs exactly this case — a texture
-whose guest memory a scaled resolve wrote, that cannot be read back out of the
-scaled resolve buffer — deduplicated, with the reason.
+`-Mode A -Readback full` produced a **clean image: no halo, no flicker**.
+
+The full picture across every configuration tested:
+
+| `readback_resolve` | Halo | Flicker |
+|---|---|---|
+| `none` | constant | yes |
+| `fast` (previous frame) | strobes, ~0.25 s | yes, in sync with the halo |
+| `full` (immediate sync) | **none** | **none** |
+
+The progression is the diagnosis. A one-frame-stale value producing a ~0.25 s
+oscillation, and a current value producing none, is a feedback loop settling:
+something the guest reads back from resolved memory feeds the next frame's
+lighting or exposure. Delay it by a frame and it rings; give it the current
+value and it converges.
+
+So the femtofork's *premise* was right after all — Fable II does consume resolve
+results on the CPU — it was just aimed at the wrong resolve, and at the wrong
+symptom. The morph textures never needed it; the lighting does.
+
+### The texture-cache fallback was not involved
+
+`log_unscaled_resolve_textures` reported nothing in that run. Note that the
+first version of the flag had no way to distinguish "nothing happened" from
+"the flag never bound", because the `CONFIG DUMP` echoes the config file rather
+than the cvar registry. It now prints a one-shot
+
+```
+log_unscaled_resolve_textures is active - any texture read from shared memory
+instead of the scaled resolve buffer will be reported below
+```
+
+so a null result can be trusted. **Re-confirm on the next run that this line is
+present** before treating the absence of fallback reports as meaningful.
+
+### Profile change
+
+`fable2-2x-selective.config.toml` now ships `readback_resolve = "full"` instead
+of `"none"`. The `"none"` was chosen to make room for selective readback code
+that never executed, and it is the direct cause of the constant halo. A/B/C all
+inherit this, so a plain `-Mode A` is now the clean configuration.
+
+### Open question: is `full` affordable?
+
+`full` stalls the GPU on every resolve, and the resolve table showed well over a
+hundred distinct destinations. Correctness is settled; performance is not, and
+no frame rate has been recorded for any of these runs.
+
+Record into [UAT_RESULTS.md](UAT_RESULTS.md):
 
 ```powershell
-.\fable2\run.ps1 -Mode A -Readback full -LogUnscaledTextures -Quiet 'C:\Users\wdob\Desktop\Fable 2\Fable 2 PLT.iso'
+.\fable2\run.ps1 -Mode A -Readback full -Quiet 'C:\Users\wdob\Desktop\Fable 2\Fable 2 PLT.iso'
+.\fable2\run.ps1 -Mode A -Readback fast -Quiet 'C:\Users\wdob\Desktop\Fable 2\Fable 2 PLT.iso'
+.\fable2\run.ps1 -Mode B -Readback full -Quiet 'C:\Users\wdob\Desktop\Fable 2\Fable 2 PLT.iso'
 ```
 
-This run does two jobs at once.
+If 2x with `full` reaches roughly 30 FPS, the work is done: ship it and delete
+the selective machinery. If it does not, the useful optimisation is now clearly
+defined — most of those resolves are certainly never read by the CPU, so
+restricting `full` readback to the destination range that actually matters
+should recover most of the cost. That is what the existing selective code
+should have been: a **destination range filter**, general rather than
+title-specific, found by bisecting the address range rather than by copying a
+hard-coded constant from an old fork.
 
-`-Readback full` syncs immediately instead of using the previous frame, so it
-removes both the one-frame staleness and the hit/miss alternation that `fast`
-has:
+### Note: Xenia rewrites the profile TOMLs
 
-- Flicker **gone** (image possibly still wrong, but steady) → the cycle was
-  readback timing, and the remaining error is the 1x-versus-2x content
-  mismatch.
-- Flicker **unchanged** → timing is not the cycle, and something else is
-  invalidating and reloading these textures periodically.
-
-Meanwhile the log names every texture on the fallback path. Look for:
-
-```
-Scaled-resolved memory at 0x... is being read as a NxM <format> texture from
-shared memory, not the scaled resolve buffer, because ...
-```
-
-If the character mip chains (`0x1270C000`-`0x12965000`) and the post-process
-pyramid (`0x12AE9000`, `0x12CAB000`, `0x12D41000`) show up there, the diagnosis
-is closed: those surfaces can never be correct at 2x on this path, and the
-options narrow to adding the missing scaled load pipeline for that format, or
-running at 1x.
-
-Do not use `-ScaleThreshold`; see the rejected section above.
+`SetupConfig` points `config_path` at the file passed to `--config`, and
+[xenia_main.cc:572](../src/xenia/app/xenia_main.cc#L572) calls
+`config::SaveConfig()` on exit. So every run rewrites the profile: hex literals
+become decimal, and newly registered cvars are appended. Command-line overrides
+are *not* written back. Don't be surprised by a profile diff you didn't make.
 
 ## Goal and machine
 
@@ -346,14 +386,15 @@ shader cache.
 
 | Launch | Internal rendering | Final processing | Matching morph readback |
 | --- | --- | --- | --- |
-| `-Profile quality` | 2x | No configured sharpening | Global fast readback - the only mode that reads back anything |
-| `-Profile selective` | 2x | CAS | Intended selective; **never matches, so none** |
-| `-Mode A` | 2x | CAS | **None** (signature never matches) |
-| `-Mode B` | 1x | FSR | **None** (signature never matches) |
-| `-Mode C` | 2x | CAS | **None** (signature never matches) |
+| `-Profile quality` | 2x | No configured sharpening | Global `fast` - strobes, see Round 5 |
+| `-Profile selective` | 2x | CAS | Global `full` - the clean configuration |
+| `-Mode A` | 2x | CAS | Global `full` |
+| `-Mode B` | 1x | FSR | Global `full` |
+| `-Mode C` | 2x | CAS | Global `full`; the selective-fast flag is inert |
 
-Until the signature is corrected, A/B/C differ only in resolution and
-sharpening. Do not read an A-vs-C result as a readback comparison.
+The selective signature never matches, so A/B/C differ only in resolution and
+sharpening. Do not read an A-vs-C result as a readback comparison; use
+`-Readback` to vary readback deliberately.
 
 All A/B/C launches force `apply_patches = true`, `vsync = true`,
 `framerate_limit = 0`, D3D12 RTV rendering, synchronous shader compilation, and
@@ -420,51 +461,39 @@ Important consequences:
 - Website and Collector's Edition unlocks are content changes, not performance
   optimizations.
 
-## Open investigation: the blue/pink foliage light
+## Closed: the blue/pink foliage light
 
-Bisect the render-config patches first — one variable per run, same save,
-route, and camera:
+Resolved by `readback_resolve = "full"` — see Round 5. Kept here only so the
+eliminated candidates aren't retried:
 
-| Preset | 600p | Disable MSAA | Note |
-|--------|------|--------------|------|
-| P0 | on | on | current state, baseline |
-| P1 | on | off | already tested — no change |
-| P2 | off | on | |
-| P3 | off | off | closest to the stock render config |
+- **CAS** — ruled out. `-Mode A -Sharpening bilinear` still showed the halo.
+- **`draw_resolution_scale_threshold`** — far worse, see the rejected section.
+  Never revisit for this title.
+- **Game MSAA** — the `Disable MSAA` patch made no difference either way, so
+  the P1/P2/P3 render-config bisect was never needed and remains unrun.
+- **The texture-cache shared-memory fallback** — `log_unscaled_resolve_textures`
+  reported nothing, so no texture was taking that path.
+- **ROV** — removes the flicker but not the halo, and is far too slow to ship.
+  Useful only as an accuracy oracle.
 
-`600p` writes `0x58` at `0x8238df4f`; `Disable MSAA` writes `0x01` at
-`0x8238df3f` — 16 bytes apart, almost certainly the same render-config
-structure. `600p` exists to fix strobing under the game's *original* MSAA, so
-with MSAA off it may no longer be helping. The two are not independent.
+Untried, and now unnecessary: `-GammaAsUnorm16 false`,
+`mrt_edram_used_range_clamp_to_min = false`,
+`depth_float24_convert_in_pixel_shader`, and a `xenia-gpu-d3d12-trace-viewer`
+capture (`-DXENIA_BUILD_MISC=ON`, **F4**). Reach for the trace viewer first if a
+new rendering fault appears — it would have identified this in one capture.
 
-Then emulator knobs, one at a time, on the best patch combo, ranked by how
-directly each targets "a bright buffer comes out the wrong colour":
+## Performance work — now the only open item
 
-1. `-GammaAsUnorm16 false` — top suspect. The cvar's own description warns
-   about games switching between `8_8_8_8_GAMMA` and `8_8_8_8` views of the
-   same EDRAM range, which is what a bloom/tone-map chain does, and the RTV
-   path has to fake that transfer.
-2. `-ScaleThreshold 80`, then `160` — keeps small bloom/light-shaft targets at
-   native resolution. Doubles as the pending performance experiment.
-3. `mrt_edram_used_range_clamp_to_min = false` — more accurate EDRAM extent
-   estimation with multiple bound render targets.
-4. `-RtPath rov` — the accuracy oracle. Slow, not a shipping setting, but if
-   the artifact vanishes under ROV it is definitively an RTV ownership-transfer
-   or format problem.
-5. If ROV fixes it: `depth_float24_convert_in_pixel_shader = true` plus
-   `depth_float24_round = true` on RTV, since ROV forces both — this isolates
-   which half of ROV mattered.
-6. `-Mode B` (1x) with everything else identical — separates "resolution
-   scaling" from "everything else" in one run.
+Correctness is settled, so everything below is about making `full` readback
+affordable at 2x. **No frame rate has been recorded for any run yet**; that is
+the first thing to fix.
 
-If the knob matrix is inconclusive, build the trace tooling with
-`-DXENIA_BUILD_MISC=ON` (currently `OFF` in `build/CMakeCache.txt`), capture the
-frame with **F4**, and step it in `xenia-gpu-d3d12-trace-viewer` to identify the
-exact draw and render-target format.
-
-## Performance work, once visuals settle
-
-- `-ScaleThreshold 80` is the main GPU-side lever at 2x.
+- Measure `-Readback full` against `-Readback fast` at 2x, and `-Mode B` at 1x,
+  into [UAT_RESULTS.md](UAT_RESULTS.md).
+- If `full` at 2x is too slow, restrict readback to the destination range that
+  actually matters rather than every resolve. Most of the hundred-plus
+  destinations are certainly never read by the guest CPU. Bisect the address
+  range; that is what the selective code should have been.
 - The 60 FPS patch was locked in before any 2x measurement existed. GPU-bound
   near 20 FPS, an unlocked 60 target adds CPU and present work and destabilises
   pacing. Worth one A-mode run with it disabled, compared on **frame-time
@@ -475,6 +504,8 @@ exact draw and render-target format.
 - `async_shader_compilation` is off because skipped draws cause coloured
   buffers — correct for a cold cache. On a warm cache with `store_shaders`
   already populated there is nothing left to skip; worth one measured run.
+- Do **not** use `draw_resolution_scale_threshold` as a performance lever here,
+  however tempting its speed is.
 
 Record everything in [UAT_RESULTS.md](UAT_RESULTS.md).
 

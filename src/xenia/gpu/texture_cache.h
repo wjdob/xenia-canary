@@ -690,8 +690,10 @@ class TextureCache {
   // Global watch for scaled resolve data invalidation.
   SharedMemory::GlobalWatchHandle scaled_resolve_global_watch_handle_ = nullptr;
 
-  // Deduplication for log_unscaled_resolve_textures.
+  // Deduplication for log_unscaled_resolve_textures, plus a one-shot notice
+  // that the check is running so a null result can be trusted.
   std::unordered_set<uint64_t> logged_unscaled_resolve_textures_;
+  bool logged_unscaled_resolve_diagnostic_active_ = false;
 
   uint64_t current_submission_index_ = 0;
   uint64_t current_submission_time_ = 0;

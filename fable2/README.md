@@ -28,17 +28,19 @@ save into `fable2/content` only after backing it up.
 
 ## Profiles
 
-- `quality` (default): current Canary's `readback_resolve = "fast"`.
-- `selective`: `readback_resolve = "none"` plus the title-scoped femtofork
-  signature. It stalls only for the known morph resolve.
+- `selective`: `readback_resolve = "full"` plus CAS. **This is the clean
+  configuration** - testing showed `"none"` gives a constant magenta halo behind
+  foliage and `"fast"` makes it strobe. A/B/C all use it.
+- `quality` (default): `readback_resolve = "fast"`, no sharpening. Kept as the
+  cheaper comparison point; it strobes.
 
 ```powershell
 .\fable2\run.ps1 -Profile selective
 ```
 
-The selective address signature was originally validated by the femtofork on
-the GOTY/Platinum executable. Other Fable II revisions are unverified — use
-`-LogResolves` (below) to find the right destination rather than assuming it.
+The profile names are historical. The "selective" femtofork signature never
+matches this build, so `fable2_selective_readback_resolve` does nothing; the
+profile is just the one with the correct readback setting.
 
 ## A/B/C UAT
 
@@ -141,10 +143,10 @@ P0–P3 presets exist to bisect.
 1. Start with `quality`. Check the opening, first outdoor area, hero
    adulthood/makeup, dog appearance, and the clothing menu.
 2. Repeat with `selective`, comparing frame pacing and the hero/dog textures.
-   Note that `selective` runs with `readback_resolve = "none"`, which is
-   currently the prime suspect for the foliage halo — `-Readback fast` is the
-   comparison that matters.
-3. For colored boxes or wrong-colour effects, try `-GammaAsUnorm16 false`, then
+   `full` readback is correct but stalls the GPU on every resolve, so this
+   comparison is now mainly about cost.
+3. For colored boxes or wrong-colour effects, first try `-Readback full` - that
+   is what fixed the foliage halo. Then `-GammaAsUnorm16 false`, then
    `-RtPath rov` as the oracle.
 4. If 2x is too slow, use `-Mode B` (1x + FSR).
 
