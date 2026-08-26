@@ -90,10 +90,14 @@ If the first line never appears, the signature is wrong: run with
 .\fable2\run.ps1 -Mode A -Readback fast          # the profiles differ here
 .\fable2\run.ps1 -Mode A -Sharpening bilinear    # and here
 .\fable2\run.ps1 -Mode A -GammaAsUnorm16 false   # wrong colours on bright effects
-.\fable2\run.ps1 -Mode A -ScaleThreshold 80      # keep small render targets at 1x
 .\fable2\run.ps1 -Mode A -RtPath rov             # accuracy oracle, slower
 .\fable2\run.ps1 -Mode A -LogLevel 3             # everything, very slow
 ```
+
+`-ScaleThreshold` also exists, but **do not use it with Fable II**. Mixing 2x
+and native render targets breaks this game's heavy EDRAM aliasing: at 640 the
+whole scene blows out to white, blue and magenta. It is faster, and completely
+unusable.
 
 `-Readback` and `-Sharpening` exist because the `quality` and `selective`
 profiles differ in exactly those two settings and nothing else that matters, so
@@ -137,10 +141,12 @@ P0–P3 presets exist to bisect.
 1. Start with `quality`. Check the opening, first outdoor area, hero
    adulthood/makeup, dog appearance, and the clothing menu.
 2. Repeat with `selective`, comparing frame pacing and the hero/dog textures.
+   Note that `selective` runs with `readback_resolve = "none"`, which is
+   currently the prime suspect for the foliage halo — `-Readback fast` is the
+   comparison that matters.
 3. For colored boxes or wrong-colour effects, try `-GammaAsUnorm16 false`, then
    `-RtPath rov` as the oracle.
-4. If an issue occurs only at 2x, try `-ScaleThreshold 80`, then `160`.
-5. If 2x is too slow, use `-Mode B` (1x + FSR).
+4. If 2x is too slow, use `-Mode B` (1x + FSR).
 
 Keep VSync, patches, and the test location unchanged during each comparison.
 

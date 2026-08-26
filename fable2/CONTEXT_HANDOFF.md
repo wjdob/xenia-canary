@@ -5,8 +5,9 @@ Last updated: 2026-08-25
 Status: Three rounds of instrumented gameplay testing are done. The femtofork
 selective readback never runs, and global readback does not fix the morph
 textures either. The foliage halo and the texture flicker are both explained by
-guest memory going stale at 2x when readback is off; a candidate no-cost fix
-(`draw_resolution_scale_threshold`) is identified but not yet tested.
+guest memory going stale at 2x when readback is off. CAS and
+`draw_resolution_scale_threshold` have been eliminated; enabling readback is
+the remaining candidate and is untested at 2x with CAS.
 
 ## Start here
 
@@ -18,9 +19,10 @@ guest memory going stale at 2x when readback is off; a candidate no-cost fix
   mechanism and the femtofork port is dead weight.
 - The halo and the flicker both trace to **stale shared memory at 2x**: with
   `readback_resolve = "none"`, guest memory behind a resolved surface is never
-  refreshed, and any texture fetch that falls back to it reads garbage. CAS has
-  been ruled out. Next test is `-ScaleThreshold 640`, which should fix both at
-  no cost.
+  refreshed, and any texture fetch that falls back to it reads garbage. CAS and
+  `draw_resolution_scale_threshold` are both ruled out — the threshold makes it
+  far worse and must not be revisited. Turning readback on is the remaining
+  candidate.
 - The additional enabled patches were added manually and intentionally. Do not
   revert them as accidental cleanup.
 - Work lives on branch `fable2-custom` and is committed.
@@ -140,7 +142,26 @@ It explains why `quality` (readback fast) is clean, why both Mode A variants
 are not, and why ROV helped the flicker: ROV changes how EDRAM aliasing is
 resolved, so fewer fetches take the broken fallback.
 
-### The cheap fix to try first
+### Rejected: draw_resolution_scale_threshold
+
+**`-ScaleThreshold 640` was tested and is catastrophically worse.** The whole
+scene blows out to white, blue and magenta — far beyond the original halo —
+though it does run much faster.
+
+Why it fails: excluding surfaces by pitch puts some render targets at 2x and
+others at 1x, and this game aliases EDRAM heavily (that is what the resolve
+table showed). Ownership transfer between render targets of *different scales*
+is where it comes apart. The mechanism applies at any threshold value, so 320
+and 1024 are not worth trying either. **Do not revisit this setting for
+Fable II.**
+
+The blowout is itself informative: it looks like auto-exposure reading a
+garbage value, which points at the small luminance/downsample buffers
+(`0x1B648000` 32x16 `k_8`, the `k_32_FLOAT` 288x150 targets). Those are the
+same small post-process surfaces implicated in the halo — the threshold turned
+a subtle wrong-colour bug into a total exposure failure.
+
+The reasoning below is kept only to explain why the idea looked good.
 
 `draw_resolution_scale_threshold` keeps render targets at or below a given
 surface pitch at native resolution, and
@@ -158,26 +179,37 @@ A threshold of 640 covers all of them and leaves the scene at 2x:
 .\fable2\run.ps1 -Mode A -ScaleThreshold 640 -Quiet 'C:\Users\wdob\Desktop\Fable 2\Fable 2 PLT.iso'
 ```
 
-If this clears the halo **and** the flicker it is the best available outcome:
-correct, no readback stall, and *faster* than the current Mode A because those
-surfaces stop being rendered at 2x. Bloom and light shafts drop to native
-resolution, which is visually irrelevant for buffers that are blurred anyway.
+The idea was that this would clear the halo with no readback stall and run
+faster. The speed part held; the correctness part did not.
 
-If it only clears one of the two, try 320 and 1024 to bracket which surfaces
-matter.
+## Where this leaves the halo
 
-### The fallback fix
+Every configuration tested so far, and the one variable that separates them:
+
+| Config | Halo | Flicker |
+|---|---|---|
+| Mode A — 2x, cas, readback **none**, RTV | yes | yes |
+| Mode A + ROV — readback **none** | yes | no |
+| Mode A + bilinear — readback **none** | yes | yes |
+| Mode A + `-ScaleThreshold 640` — readback **none** | catastrophic | — |
+| `quality` — 2x, bilinear, readback **fast**, RTV | **no** | yes |
+
+The only clean-halo run is the only one with readback on. Turning readback on
+is now the remaining candidate, and the run is also the target configuration:
 
 ```powershell
 .\fable2\run.ps1 -Mode A -Readback fast -Quiet 'C:\Users\wdob\Desktop\Fable 2\Fable 2 PLT.iso'
 ```
 
-This is `quality` plus CAS, i.e. the configuration the user actually wants, and
-should be clean if the diagnosis holds. It costs a GPU downscale, a copy and a
-map per resolve, so compare its frame rate against the threshold run before
-choosing. Note that `"fast"` has been Canary's default since 2025-12-04 — the
-`"none"` in the `selective` profile is this fork's own deviation, introduced to
-support selective readback code that never ran.
+This is `quality` plus CAS. It costs a GPU downscale, a copy and a map per
+resolve, so record the frame rate as well as the visuals — if it is clean, the
+remaining question is purely whether the cost is affordable, and `-Readback
+full` versus `fast` is the next dial.
+
+`"fast"` has been Canary's default since 2025-12-04. The `"none"` in the
+`selective` profile is this fork's own deviation, introduced to support
+selective readback code that never ran — so if this is the fix, the profile
+should simply stop deviating and the selective machinery should be deleted.
 
 Note both profiles use different `cache_root` values, so they have separate
 shader caches. With `async_shader_compilation = false` that should not affect
