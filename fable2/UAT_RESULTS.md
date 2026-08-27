@@ -7,7 +7,23 @@ settings, and a similar starting GPU temperature.
 Always warm the shader cache on the route before recording, and always launch
 measured runs with `-Quiet` so stdout logging isn't in the frame-time path.
 
-## Conclusion
+## Final state (2026-08-27)
+
+| Config | FPS | Visuals |
+|---|---|---|
+| **`-Mode B`** (1x + FSR) | **~31-37** | clean except a ~2px dark wedge under the dog |
+| `-Mode A` (2x + CAS) | ~19-20 | same |
+
+Started at ~20 FPS with a constant magenta halo. The halo was fixed by merging
+upstream `437a7280c`; `await_gpu_completion_per_frame` is no longer needed and
+both profiles default it off.
+
+The remaining artifact resisted every setting tried - see the ruled-out table in
+the repository README. Investigation stopped there as a deliberate call: it is
+cosmetic, intermittent, and the next honest step is implementing Xenia's own
+trace-viewer render-target hooks.
+
+## Conclusion (pre-merge, historical)
 
 **Fable II needs one CPU-GPU synchronization per frame.** Without it the light
 behind foliage renders magenta/blue and textures flicker; the readback data

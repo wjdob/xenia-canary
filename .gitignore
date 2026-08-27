@@ -120,3 +120,8 @@ recent.toml
 # Emulator console settings written into the working directory by the GPU
 # trace viewer and trace dump, which have no storage root of their own.
 /xconfig.settings
+
+# RenderDoc captures and exports from GPU debugging sessions.
+/*.rdc
+/renderdocexport*.txt
+/EID*.html

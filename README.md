@@ -26,11 +26,13 @@ Measured on the merged tree **with the per-frame sync turned off**:
 
 | Configuration | FPS | Visuals |
 |---|---|---|
-| 1x + FSR (`-Mode B -SyncPerFrame false`) | **~31-37** | halo gone; residual flicker on the dog |
-| 2x + CAS (`-Mode A -SyncPerFrame false`) | ~19-20 | halo gone (one momentary blue tree); dog flicker |
+| **1x + FSR (`-Mode B`)** | **~31-37** | halo gone; one residual artifact on the dog |
+| 2x + CAS (`-Mode A`) | ~19-20 | same |
 
-So the foliage halo is essentially fixed upstream, and the frame rate is well
-above where the workaround left it (1x was ~26-30 with the sync, 2x ~16-17).
+So the foliage halo is fixed upstream, and the frame rate is well above where
+the workaround left it (1x was ~26-30 with the sync, 2x ~16-17). **Both
+profiles now default the sync off** - after this merge it fixes nothing here
+and only costs frame rate - so a plain `-Mode A` or `-Mode B` is correct.
 
 **What remains is a flicker on the dog** - black striping in a downward
 triangle from the belly toward the ground, more frequent when the camera moves,
@@ -68,34 +70,80 @@ independently of this game.
 So all three ROV-forced settings are ruled out, ROV itself is no longer a
 reference for correct behaviour, and the cvar-guessing avenue is exhausted.
 
-### Capturing a frame instead
+### The remaining artifact, and where the investigation stopped
 
-Guessing at cvars identified the halo correctly but has produced nothing on the
-dog flicker across several rounds. A capture answers directly what a draw is
-doing:
+What is left is a thin dark wedge, roughly two pixels wide, anchored to the
+dog's silhouette and extending down to the ground. Intermittent, worse under
+camera motion, purely cosmetic. Everything below was tested in-game and **does
+not fix it**:
+
+| Tried | Result |
+|---|---|
+| `await_gpu_completion_per_frame = true` | no effect |
+| `-Sharpening bilinear` (no FSR/CAS) | no effect — rules out sharpening amplification |
+| `-ExactDepth24` | **worse** — widespread flicker, foliage through solid objects |
+| `-RtPath rov` | **worse** — reintroduces the halo |
+| `gamma_render_target_as_unorm16 = false` | no effect |
+| `no_discard_stencil_in_transfer_pipelines = true` | no effect |
+| `native_stencil_value_output = false` | no effect |
+
+A RenderDoc capture established the exact path the final image takes:
+
+```
+RT Dump k_2_10_10_10 1xMSAA   host RT      -> EDRAM buffer
+Resolve Copy Full 32bpp       EDRAM buffer -> guest RAM (0x1ED02000)
+Dispatch(40, 23, 1)           guest RAM    -> staging buffer
+CopyTextureRegion             staging      -> loaded framebuffer texture
+Dispatch(80, 90, 1)           that texture -> presenter guest output
+DrawInstanced(4, 1)           FSR EASU     -> swapchain
+```
+
+The load's `guest_offset` root constant reads **`0x1ED02000`**, matching the
+`log_resolves` table exactly — so the capture and the log evidence describe the
+same thing.
+
+**Two caveats a successor must know.** The intermediate textures in that chain
+were read as "clean" at default zoom, but a two-pixel line is not visible at
+that scale, so those readings should not be trusted — zoom to 400%+ on the dog
+before concluding anything. And **two of two captured frames came out clean**
+while the displayed image was glitched; RenderDoc serialises the frame it
+captures, which is the same class of change as `await_gpu_completion_per_frame`,
+so capturing may perturb the very bug being hunted.
+
+The artifact follows the dog's geometry, so it is produced by something that
+knows that geometry — most likely the shadow passes. `Depth-only Pass #8` (338
+draws into a 4×MSAA `kD24FS8` target) is the largest candidate.
+
+### Capturing a frame yourself
+
+Xenia's own trace viewer captures without RenderDoc's serialisation, which makes
+it the better tool here in principle — but its D3D12 render-target and texture
+hooks are unimplemented stubs (`GetColorRenderTarget`, `GetDepthRenderTarget`,
+`GetTextureEntry` all return 0), so it cannot show what a draw produced.
+Implementing them is the principled next step.
 
 ```powershell
 .\xb.ps1 build --config=release --cmake-define XENIA_BUILD_MISC=ON `
+    --cmake-define XENIA_ENABLE_TRACE_WRITER=ON `
     --target xenia-gpu-d3d12-trace-viewer --target xenia-app
 ```
 
-The explicit targets matter: `XENIA_BUILD_MISC` also enables
-`xenia-ui-window-vulkan-demo`, which does not link upstream (unresolved kernel
-symbols) and would otherwise fail the whole build.
+Both defines are required. Without `XENIA_ENABLE_TRACE_WRITER` the writer is
+compiled out of release builds and **F4 silently does nothing**. The explicit
+targets matter too: `XENIA_BUILD_MISC` also enables
+`xenia-ui-window-vulkan-demo`, which does not link upstream and would fail the
+build.
 
-Then run normally, line up a shot where the dog is visibly flickering, and press
-**F4**. The trace lands under `fable2/scratch/gpu/`. Open it with
-`build/bin/Windows/Release/xenia-gpu-d3d12-trace-viewer.exe` and step the frame
-to find the draw producing the black striping - which render target it writes,
-in what format, and what it samples.
+Traces land in **`scratch/gpu/`** relative to the working directory — not the
+storage root. Open one with
+`build/bin/Windows/Release/xenia-gpu-d3d12-trace-viewer.exe <path>.xtr`.
 
-`await_gpu_completion_per_frame` has since been measured post-merge and **is no
-longer needed** - with it on, only the dog flicker remains, exactly as with it
-off, but the frame rate is lower. Both profiles now default it to `false`. The
-cvar stays because it is general and was genuinely the fix before the merge.
+For RenderDoc instead, `fable2/capture.ps1` launches the emulator under it with
+the right arguments; capture with **F12**.
 
-Everything below documents how the pre-merge conclusion was reached and remains
-accurate for that tree.
+The `await_gpu_completion_per_frame` cvar stays in the tree because it is
+general and was genuinely the fix before this merge. Everything below documents
+how that pre-merge conclusion was reached, and remains accurate for that tree.
 
 ## The headline finding
 
