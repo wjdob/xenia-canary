@@ -39,6 +39,13 @@ DEFINE_bool(d3d12_submit_on_primary_buffer_end, true,
             "possible to submit immediately to try to reduce frame latency.",
             "D3D12");
 
+DEFINE_bool(
+    fable2_dog_mesh_fix, false,
+    "Skip the redundant Fable II dog draw whose corrupt skinned vertices may "
+    "stretch across the scene. Applies only to title 4D5307F1 and vertex "
+    "shader 7C5710DEF3EE33C4. D3D12 only; off by default.",
+    "D3D12");
+
 DECLARE_bool(clear_memory_page_state);
 DECLARE_bool(await_gpu_completion_per_frame);
 DECLARE_int32(gpu_frames_in_flight);
@@ -2628,6 +2635,21 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     return false;
   }
   pipeline_cache_->AnalyzeShaderUcode(*vertex_shader);
+
+  constexpr uint32_t kFable2TitleId = 0x4D5307F1;
+  constexpr uint64_t kFable2DogVertexShaderHash = 0x7C5710DEF3EE33C4ull;
+  if (cvars::fable2_dog_mesh_fix && kernel_state_ &&
+      kernel_state_->title_id() == kFable2TitleId &&
+      vertex_shader->ucode_data_hash() == kFable2DogVertexShaderHash) {
+    static bool logged = false;
+    if (!logged) {
+      XELOGW(
+          "Fable II dog mesh fix active: skipping vertex shader {:016X}.",
+          kFable2DogVertexShaderHash);
+      logged = true;
+    }
+    return true;
+  }
 
   const bool memexport_used_vertex = vertex_shader->memexport_eM_written() != 0;
 

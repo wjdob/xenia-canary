@@ -86,6 +86,7 @@ license_mask = 0                                  	# Set license mask for activa
 
 
 [D3D12]
+fable2_dog_mesh_fix = true                         # Skip the redundant Fable II dog draw whose corrupt skinned vertices may stretch across the scene. Applies only to title 4D5307F1 and vertex shader 7C5710DEF3EE33C4. D3D12 only.
 d3d12_adapter = -1                                	# Index of the DXGI adapter to use. -1 for any physical adapter, -2 for WARP software rendering.
 d3d12_allow_variable_refresh_rate_and_tearing = true	# In fullscreen, allow using variable refresh rate on displays supporting it. On displays not supporting VRR, screen tearing may occur in certain cases.
 d3d12_bindless = true                             	# Use bindless resources where available - may improve performance, but may make debugging more complicated.
@@ -156,6 +157,7 @@ anisotropic_override = -1                         	# Forces anisotropic filterin
                                                   	#   5 = Force 16x anisotropic filtering
 
 async_shader_compilation = false                  	# Compile shaders and create pipelines asynchronously in background threads. Eliminates shader compilation stutter but may cause brief rendering artifacts while pipelines are being created. When disabled, pipelines are created synchronously which causes stutter but no visual artifacts.
+shader_storage_initialization_blocking = true      # Finish loading and compiling warmed shader pipelines before starting the guest to avoid background compilation stutter during gameplay.
 await_gpu_completion_per_frame = false             	# Wait for the GPU to go idle once at the end of every frame. Was needed before upstream 437a7280c; since that merge it fixes nothing here and only costs frame rate.
 clear_memory_page_state = true                    	# Refresh state of memory pages to enable gpu written data. (Use for 'Team Ninja' Games to fix missing character models)
 depth_bias_shader_offset = false                  	# Route decal host render target draws with polygon offset through shader depth. This avoids Z-fighting in games that rely on tiny depth bias values that host fixed function depth bias cannot reproduce reliably.This likely causes some minor performance penalty, but the cost should be minimal if only a small portion of the scene is affected.

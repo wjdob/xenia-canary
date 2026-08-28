@@ -2,26 +2,38 @@
 
 Xenia Canary with a Fable II profile, launcher and patch bundle.
 
-**What Fable II actually needs is one CPU-GPU synchronization per frame.**
-Without it the light behind foliage renders magenta and textures flicker. Both
-profiles ship `await_gpu_completion_per_frame = true`, which costs about 3-4 FPS.
+Three independent Fable II defects have different fixes:
 
-The old femtofork's selective-readback idea was ported, tested, and removed: its
-signature never matched this build, and readback does not fix the morph
-textures — `readback_resolve = "full"` looked like a fix only because of the
-stall it happened to cause, at roughly half the frame rate. The investigation's
-general leftovers stayed in: resolve logging, readback skip reporting,
-submission fences on the readback buffers, a readback destination range filter,
-and the per-frame sync itself.
+- `Disable Texture Morphing` fixes black hero and dog textures; readback does
+  not.
+- Upstream commit `437a7280c` fixed the magenta foliage halo with its
+  single-sample EDRAM addressing.
+- The D3D12 `fable2_dog_mesh_fix` removes the dog vertex-mesh extrusion. The
+  control/candidate matrix passed in both supported modes, so both profiles
+  enable it while the cvar remains an immediate rollback.
+
+The remaining performance investigation is a periodic hitch roughly every
+4–5 seconds. Fable II now waits for its warmed persistent pipeline cache to
+finish initializing before guest execution; see
+[Periodic-stutter UAT](UAT_RESULTS.md#periodic-stutter-remediation-uat) for the
+controlled validation matrix.
+
+The old femtofork's selective-readback signature never matched this build and
+was removed. The general diagnostics and synchronization controls discovered
+during that investigation remain available.
 
 See [CONTEXT_HANDOFF.md](CONTEXT_HANDOFF.md) for the full investigation.
 
 ## Build and run
 
 ```powershell
-.\xb.ps1 build --config=release
+.\xb.ps1 build --config=release --force `
+  --cmake-define XENIA_BUILD_MISC=OFF --target xenia-app
 .\fable2\run.ps1
 ```
+
+Release builds intentionally compile out Xenia's internal F4 GPU trace writer.
+F12 screenshots and [RenderDoc capture](capture.ps1) remain available.
 
 A clean Windows build also needs the Vulkan shader tools described in
 `docs/building.md`, even when the runtime profile uses D3D12. The validated
@@ -39,11 +51,13 @@ save into `fable2/content` only after backing it up.
 
 ## Profiles
 
-Both ship `await_gpu_completion_per_frame = true` with `readback_resolve =
-"none"`. That per-frame CPU-GPU sync is what Fable II actually needs to render
-correctly — without it the light behind foliage goes magenta and textures
-flicker. They differ only in sharpening: `selective` uses CAS, `quality` uses
-none.
+Both ship `await_gpu_completion_per_frame = false`, `readback_resolve =
+"none"`, `fable2_dog_mesh_fix = true`, and
+`shader_storage_initialization_blocking = true`. Upstream's EDRAM fix made the
+old per-frame sync unnecessary. Their intended rendering difference is
+sharpening: `selective` uses CAS, while `quality` uses none. They retain
+separate shader-cache roots so profile experiments do not contaminate each
+other.
 
 The profile names are historical; "selective" no longer refers to anything.
 
@@ -59,20 +73,76 @@ the same enabled game patches:
 ```powershell
 .\fable2\run.ps1 -Mode A "D:\Games\Fable II.iso" # 2x + CAS
 .\fable2\run.ps1 -Mode B "D:\Games\Fable II.iso" # 1x + FSR  <-- recommended
-.\fable2\run.ps1 -Mode C "D:\Games\Fable II.iso" # 2x + CAS, readback-range experiments
+.\fable2\run.ps1 -Mode C "D:\Games\Fable II.iso" # Mode A + readback-range preset
 ```
 
-**`-Mode B` is the recommended configuration: ~26-30 FPS, clean.** `-Mode A` is
-also clean but runs ~16-17 FPS — 2x cannot reach 30 on a GTX 1660 Ti, which is
-a hardware limit rather than a remaining bug. Mode B is 1x with FSR upscaling,
-so it is not a plain resolution drop.
+**`-Mode B` is the recommended configuration: roughly 30 FPS with the dog-mesh
+fix enabled.** `-Mode A` runs roughly 20 FPS and preserves the preferred 2x
+image quality. Mode B is 1x with FSR upscaling, so it is not a plain resolution
+drop.
 
-Mode C exists only for readback-range experiments and is no longer needed.
+Mode C only sets `ReadbackRange` to `0x1B600000,0x800000`; with the default
+`readback_resolve = "none"`, that range is inert and Mode C behaves like Mode A.
+Supply `-Readback fast` or `-Readback full` to activate a range experiment.
 
 Record results in [UAT_RESULTS.md](UAT_RESULTS.md). Always add `-Quiet` to
 measured runs — stdout logging is synchronous and distorts frame times.
 
+### Dog-mesh workaround result
+
+The direct A/B controls reproduced the triangular extrusion, and enabling the
+cvar removed it without a reported frame-rate regression:
+
+```powershell
+.\fable2\run.ps1 -Mode A -Cvar fable2_dog_mesh_fix=false -Quiet "D:\Games\Fable II.iso"
+.\fable2\run.ps1 -Mode A -Cvar fable2_dog_mesh_fix=true  -Quiet "D:\Games\Fable II.iso"
+.\fable2\run.ps1 -Mode B -Cvar fable2_dog_mesh_fix=false -Quiet "D:\Games\Fable II.iso"
+.\fable2\run.ps1 -Mode B -Cvar fable2_dog_mesh_fix=true  -Quiet "D:\Games\Fable II.iso"
+```
+
+| Mode | Fix off | Fix on |
+|---|---|---|
+| A | extrusion present | extrusion absent, ~20 FPS |
+| B | extrusion present | extrusion absent, ~30 FPS |
+
+The first matching skip is logged. Use
+`-Cvar fable2_dog_mesh_fix=false` for immediate rollback if a later scene
+reveals missing dog geometry, animation, or shadow behavior.
+
+### Periodic-stutter baseline
+
+The build inherited a sticky `XENIA_ENABLE_TRACE_WRITER=ON` CMake cache entry.
+That produced an optimized Release executable, but with F4 trace hooks compiled
+into hot GPU paths. No trace was active, so this is not itself a demonstrated
+4–5-second timer; clean Release builds remove the hidden variable.
+
+The same log queued 532 cached pipeline descriptions, of which 258 still needed
+shader translation, on up to seven workers while
+`async_shader_compilation=false`. Previously the guest launched immediately
+and the `0 ms` message measured only queueing. With
+`shader_storage_initialization_blocking=true`, the loading indicator remains
+active until this work completes and the log reports actual completion time.
+This changes startup only; A/B/C rendering semantics remain unchanged.
+
+For a non-blocking control on the same clean executable:
+
+```powershell
+.\fable2\run.ps1 -Mode B `
+  -Cvar shader_storage_initialization_blocking=false,fable2_dog_mesh_fix=true `
+  -Quiet "D:\Games\Fable II.iso"
+```
+
+Free at least 20 GB on the SSD containing the ISO before comparing builds, but
+preserve saves and the warmed shader cache. The three-boundary matrix, metrics,
+acceptance threshold, and evidence-gated fallbacks are in
+[UAT_RESULTS.md](UAT_RESULTS.md#periodic-stutter-remediation-uat).
+
 ## Diagnostics
+
+F12 takes Xenia screenshots normally and is the capture key used by
+`capture.ps1` under RenderDoc. F4 is a different facility: Xenia's internal GPU
+trace writer, available in Debug builds and intentionally compiled out of the
+clean Release gameplay build.
 
 The readback path has several early exits that used to fail silently, which is
 why a game could get no readback at all with nothing in the log. They are now
@@ -108,18 +178,18 @@ In `build/bin/Windows/Release/xenia.log`:
 ```
 
 `-ExactDepth24` forces the two depth-precision settings the ROV backend always
-uses (`depth_float24_convert_in_pixel_shader` and `depth_float24_round`).
-Shadow-map striping is a depth-precision artifact, so it is the first thing to
-try for the residual dog flicker on the RTV path.
+uses (`depth_float24_convert_in_pixel_shader` and `depth_float24_round`). It was
+tested against the dog extrusion and made rendering worse; it is retained only
+as a general diagnostic.
 
 `-SyncPerFrame` and `-FramesInFlight` control per-frame CPU-GPU synchronization.
 This was the fix before upstream's EDRAM rework; since that merge it fixes
 nothing here and only costs frame rate, so both profiles default it off.
 
-`-Readback` and `-ReadbackRange` are no longer needed for this title — readback
-is off and the per-frame sync does the job. They remain useful for other
-titles: the cost of readback scales with the *number* of resolves read back
-rather than their size, which is what `-ReadbackRange` exploits.
+`-Readback` and `-ReadbackRange` are no longer needed for this title. They
+remain useful for other titles: the cost of readback scales with the *number*
+of resolves read back rather than their size, which is what `-ReadbackRange`
+exploits. A range alone does nothing while readback is `none`.
 
 Overrides are applied after the mode defaults, and Xenia's parser takes the last
 occurrence of a flag, so `-Mode B -Sharpening bilinear` does override Mode B's
@@ -130,9 +200,10 @@ and native render targets breaks this game's heavy EDRAM aliasing: at 640 the
 whole scene blows out to white, blue and magenta. It is faster, and completely
 unusable.
 
-`rov` is the pixel-shader-interlock render backend. It removes the texture
-flicker but not the halo, and is far too slow to ship — useful only as an
-accuracy oracle.
+`rov` is the pixel-shader-interlock render backend. Before the EDRAM merge it
+removed the dog artifact; afterward it reintroduces the halo and no longer
+removes the extrusion. It is too slow to ship and is not an accuracy oracle for
+this symptom.
 
 ## Patches
 
@@ -142,6 +213,7 @@ The active bundle is in [patches/](patches/). Inspect and toggle it with:
 .\fable2\patch-preset.ps1 -Show
 .\fable2\patch-preset.ps1 -Preset P2
 .\fable2\patch-preset.ps1 -Morph on
+.\fable2\patch-preset.ps1 -Fps60 off -HighTick on
 ```
 
 Currently enabled: 600p Resolution, Skip intro videos (twice — redundant but
@@ -160,15 +232,13 @@ halo, so that bisect was never needed.
 
 ## Test order
 
-1. Start with `-Mode A`. Check the opening, first outdoor area, hero
-   adulthood/makeup, dog appearance, and the clothing menu.
-2. For wrong-colour effects or flicker, check `-SyncPerFrame true` first —
-   that is what fixes the foliage halo. Then `-GammaAsUnorm16 false`, then
-   `-RtPath rov` as the oracle.
-3. For frame rate, try `-FramesInFlight 1 -SyncPerFrame false`, a cheaper way
-   to buy the same per-frame sync point.
-4. If 2x is too slow, use `-Mode B` (1x + FSR) — it is the recommended
-   configuration.
+1. Complete the three-boundary periodic-stutter matrix on Mode B's stationary
+   reproduction, then validate the winner in both A and B.
+2. Check the dog body, coat, legs, tail, animation and ordinary shadow, plus
+   hero/dog textures, foliage halo, cutscenes and crashes.
+3. Change only the fallback implicated by the WPR trace; do not combine cvar or
+   patch experiments.
+4. If 2x is too slow, use `-Mode B` (1x + FSR), the recommended configuration.
 
 Keep VSync, patches, and the test location unchanged during each comparison.
 

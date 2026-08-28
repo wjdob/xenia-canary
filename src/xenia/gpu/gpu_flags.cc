@@ -121,6 +121,13 @@ DEFINE_bool(
     "GPU");
 
 DEFINE_bool(
+    shader_storage_initialization_blocking, false,
+    "Finish loading and creating pipelines from persistent shader storage "
+    "before launching the guest. This may increase startup time, but avoids "
+    "pipeline initialization competing with gameplay.",
+    "GPU");
+
+DEFINE_bool(
     ac6_ground_fix, false,
     "This fixes(hide) issues with black ground in AC6. Use only in AC6. "
     "Might cause issues in other titles.",

@@ -264,6 +264,9 @@ void PipelineCache::InitializeShaderStorage(
             TranslateShadersForStorage(translations_needed, edram_rov_used);
           },
           pipeline_stored_descriptions)) {
+    if (completion_callback) {
+      completion_callback();
+    }
     return;
   }
   shader_storage_file_flush_needed_ = false;
@@ -509,9 +512,16 @@ void PipelineCache::InitializeShaderStorage(
           pipelines_ps_not_found, pipelines_ps_translation_missing,
           pipelines_root_sig_failed);
     }
-    XELOGI("Pipeline creation took {} milliseconds",
-           (xe::Clock::QueryHostTickCount() - pipeline_creation_start_) * 1000 /
-               xe::Clock::QueryHostTickFrequency());
+    const uint64_t pipeline_creation_elapsed_ms =
+        (xe::Clock::QueryHostTickCount() - pipeline_creation_start_) * 1000 /
+        xe::Clock::QueryHostTickFrequency();
+    if (!blocking && !creation_threads_.empty() && pipelines_created != 0) {
+      XELOGI("Pipelines queued for background compilation in {} milliseconds",
+             pipeline_creation_elapsed_ms);
+    } else {
+      XELOGI("Pipeline creation completed in {} milliseconds",
+             pipeline_creation_elapsed_ms);
+    }
   }
 
   shader_storage_title_id_ = title_id;

@@ -3560,11 +3560,21 @@ void VulkanPipelineCache::InitializeShaderStorage(
       }
     }
 
-    XELOGI("Pipeline cache: {} created, {} already exist, {} total in {} ms",
-           pipelines_created, pipelines_already_exist,
-           pipeline_stored_descriptions.size(),
-           (xe::Clock::QueryHostTickCount() - pipeline_creation_start) * 1000 /
-               xe::Clock::QueryHostTickFrequency());
+    const uint64_t pipeline_creation_elapsed_ms =
+        (xe::Clock::QueryHostTickCount() - pipeline_creation_start) * 1000 /
+        xe::Clock::QueryHostTickFrequency();
+    if (!blocking && !creation_threads_.empty() && pipelines_created != 0) {
+      XELOGI(
+          "Pipeline cache: {} queued for background compilation, {} already "
+          "exist, {} total in {} ms",
+          pipelines_created, pipelines_already_exist,
+          pipeline_stored_descriptions.size(), pipeline_creation_elapsed_ms);
+    } else {
+      XELOGI(
+          "Pipeline cache: {} completed, {} already exist, {} total in {} ms",
+          pipelines_created, pipelines_already_exist,
+          pipeline_stored_descriptions.size(), pipeline_creation_elapsed_ms);
+    }
 
     if (pipelines_vs_not_found || pipelines_vs_translation_missing ||
         pipelines_ps_not_found || pipelines_ps_translation_missing ||

@@ -16,10 +16,15 @@ game's original MSAA, so with MSAA disabled it may no longer be helping.
 black hero and dog. Turn morphing back on to test whether the emulator renders
 them correctly by itself.
 
+-Fps60 and -HighTick independently toggle the "60 FPS" and "High Tick Rate"
+patches for fallback timing diagnosis.
+
 .EXAMPLE
 .\fable2\patch-preset.ps1 -Show
 .\fable2\patch-preset.ps1 -Preset P2
 .\fable2\patch-preset.ps1 -Morph on
+.\fable2\patch-preset.ps1 -Fps60 off -HighTick on
+.\fable2\patch-preset.ps1 -Fps60 on -HighTick on -WhatIf
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
@@ -35,6 +40,13 @@ param(
   [ValidateSet("", "on", "off")]
   [string]$Morph = "",
 
+  # Independently toggle the 60 FPS and High Tick Rate patches.
+  [ValidateSet("", "on", "off")]
+  [string]$Fps60 = "",
+
+  [ValidateSet("", "on", "off")]
+  [string]$HighTick = "",
+
   # Print the current is_enabled state and exit.
   [switch]$Show
 )
@@ -47,6 +59,8 @@ if (!(Test-Path -LiteralPath $patchFile -PathType Leaf)) {
 $k600p = "600p Resolution (Fixes Strobe)"
 $kMsaa = "Disable MSAA (Multi-Sample Anti-Aliasing)"
 $kMorph = "Disable Texture Morphing"
+$kFps60 = "60 FPS"
+$kHighTick = "High Tick Rate"
 
 $presets = @{
   "P0" = @{ $k600p = "true";  $kMsaa = "true"  }
@@ -59,7 +73,7 @@ $originalText = [System.IO.File]::ReadAllText($patchFile)
 $hadTrailingNewline = $originalText.EndsWith("`n")
 $lines = [System.IO.File]::ReadAllLines($patchFile)
 
-if ($Show -or (!$Preset -and !$Morph)) {
+if ($Show -or (!$Preset -and !$Morph -and !$Fps60 -and !$HighTick)) {
   $currentName = $null
   foreach ($line in $lines) {
     if ($line -match '^\s*name\s*=\s*"(.*)"') { $currentName = $Matches[1] }
@@ -67,7 +81,7 @@ if ($Show -or (!$Preset -and !$Morph)) {
       "{0,-5} {1}" -f $Matches[1], $currentName
     }
   }
-  if (!$Preset -and !$Morph) { exit 0 }
+  if (!$Preset -and !$Morph -and !$Fps60 -and !$HighTick) { exit 0 }
 }
 
 $overrides = @{}
@@ -79,6 +93,12 @@ if ($Preset) {
 if ($Morph) {
   # Morphing on means the disabling patch is off.
   $overrides[$kMorph] = if ($Morph -eq "off") { "true" } else { "false" }
+}
+if ($Fps60) {
+  $overrides[$kFps60] = if ($Fps60 -eq "on") { "true" } else { "false" }
+}
+if ($HighTick) {
+  $overrides[$kHighTick] = if ($HighTick -eq "on") { "true" } else { "false" }
 }
 
 $currentName = $null
@@ -101,6 +121,8 @@ for ($i = 0; $i -lt $lines.Count; $i++) {
 $what = @()
 if ($Preset) { $what += "preset $Preset" }
 if ($Morph) { $what += "morph $Morph" }
+if ($Fps60) { $what += "60 FPS $Fps60" }
+if ($HighTick) { $what += "high tick $HighTick" }
 $what = $what -join ", "
 
 if (!$changed) {

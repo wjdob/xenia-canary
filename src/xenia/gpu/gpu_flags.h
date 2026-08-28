@@ -44,6 +44,8 @@ DECLARE_bool(no_discard_stencil_in_transfer_pipelines);
 
 DECLARE_bool(async_shader_compilation);
 
+DECLARE_bool(shader_storage_initialization_blocking);
+
 DECLARE_bool(gpu_3d_to_2d_texture);
 
 DECLARE_bool(ac6_ground_fix);

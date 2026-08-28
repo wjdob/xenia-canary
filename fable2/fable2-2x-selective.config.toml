@@ -98,6 +98,7 @@ d3d12_pipeline_creation_threads = -1              	# Number of threads used for 
 d3d12_queue_priority = 1                          	# Graphics (direct) command queue scheduling priority, 0 - normal, 1 - high, 2 - global realtime (requires administrator privileges, may impact system responsibility)
 d3d12_submit_on_primary_buffer_end = true         	# Submit the command list when a PM4 primary buffer ends if it's possible to submit immediately to try to reduce frame latency.
 d3d12_tessellation_wireframe = false              	# Display tessellated surfaces as wireframe for debugging.
+fable2_dog_mesh_fix = true                        	# Skip the redundant Fable II dog draw whose corrupt skinned vertices may stretch across the scene. Applies only to title 4D5307F1 and vertex shader 7C5710DEF3EE33C4. D3D12 only; off by default.
 
 
 [Display]
@@ -290,6 +291,7 @@ render_target_path_vulkan = ""                    	# Render target emulation pat
                                                   	#   Choose what is considered the most optimal for the system (currently always FB because the FSI path is much slower now).
 
 resolve_resolution_scale_fill_half_pixel_offset = true	# When using resolution scaling, apply the hack that stretches the first surely covered host pixel in the left and top sides of render target resolve areas to eliminate the gap caused by the half-pixel offset (this is necessary for certain games to display the scene graphics).
+shader_storage_initialization_blocking = true     	# Finish loading and creating pipelines from persistent shader storage before launching the guest. This may increase startup time, but avoids pipeline initialization competing with gameplay.
 spirv_disable_rounding_mode_rte = false           	# Disable RoundingModeRTE capability in SPIR-V shaders. Enable this to allow shader debugging in RenderDoc, which doesn't support this capability.
 use_fuzzy_alpha_epsilon = false                   	# Use approximate compare for alpha values to prevent flickering on NVIDIA graphics cards
 vsync = false                                     	# Enable VSYNC.

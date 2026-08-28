@@ -8,8 +8,8 @@ param(
   [ValidateSet("A", "B", "C")]
   [string]$Mode,
 
-  # Render target emulation path. "rov" is the accuracy oracle for colored
-  # buffers and wrong-color effects; it is slower and not a shipping setting.
+  # Render target emulation path. "rov" is slower and regressed after the
+  # single-sample EDRAM merge; retain it only for controlled diagnostics.
   [ValidateSet("", "rtv", "rov")]
   [string]$RtPath = "",
 
@@ -22,8 +22,8 @@ param(
   [ValidateSet("", "true", "false")]
   [string]$GammaAsUnorm16 = "",
 
-  # CPU readback of resolve results. The two profiles differ here, so this is
-  # how to hold it fixed while changing something else.
+  # CPU readback of resolve results. Both profiles default to none; use this to
+  # activate an explicit readback experiment.
   [ValidateSet("", "none", "fast", "full")]
   [string]$Readback = "",
 
@@ -44,9 +44,8 @@ param(
   [int]$FramesInFlight = -1,
 
   # Emulate guest 24-bit float depth exactly, as the ROV backend always does:
-  # depth_float24_convert_in_pixel_shader + depth_float24_round. Shadow-map
-  # striping ("acne") is a depth-precision artifact, so this is the first thing
-  # to try for it on the RTV path.
+  # depth_float24_convert_in_pixel_shader + depth_float24_round. This worsened
+  # Fable II's dog artifact and remains only as a general diagnostic.
   [switch]$ExactDepth24,
 
   # Arbitrary cvar overrides, so a new hypothesis needs no launcher change:
@@ -118,11 +117,10 @@ if ($isUat) {
   $modeDescription = switch ($Mode) {
     "A" { "2x + CAS" }
     "B" { "1x + FSR" }
-    "C" { "2x + CAS, readback restricted to the exposure region" }
+    "C" { "2x + CAS, readback-range preset (inactive unless readback is enabled)" }
   }
-  # Mode C is now the narrow-readback candidate: full readback, but only for
-  # the small luminance/exposure destinations, which is where the guest-side
-  # feedback loop reads. Overridable with -ReadbackRange.
+  # Mode C only presets a range. It is behaviorally Mode A while readback stays
+  # "none"; supply -Readback fast/full to activate the range experiment.
   if ($Mode -eq "C" -and !$ReadbackRange) {
     $ReadbackRange = "0x1B600000,0x800000"
   }

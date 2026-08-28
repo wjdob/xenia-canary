@@ -26,56 +26,35 @@ Measured on the merged tree **with the per-frame sync turned off**:
 
 | Configuration | FPS | Visuals |
 |---|---|---|
-| **1x + FSR (`-Mode B`)** | **~31-37** | halo gone; one residual artifact on the dog |
-| 2x + CAS (`-Mode A`) | ~19-20 | same |
+| **1x + FSR (`-Mode B`)** | **~30** | halo and dog extrusion gone |
+| 2x + CAS (`-Mode A`) | ~20 | same |
 
 So the foliage halo is fixed upstream, and the frame rate is well above where
 the workaround left it (1x was ~26-30 with the sync, 2x ~16-17). **Both
 profiles now default the sync off** - after this merge it fixes nothing here
 and only costs frame rate - so a plain `-Mode A` or `-Mode B` is correct.
 
-**What remains is a flicker on the dog** - black striping in a downward
-triangle from the belly toward the ground, more frequent when the camera moves,
-and reported as looking like a "silhouette".
+There are three separate defects; do not conflate their fixes:
 
-That reads as shadow-map acne, so the first test was `-ExactDepth24`, which
-forces the two depth-precision settings ROV always uses
-([d3d12_render_target_cache.cc:1033](src/xenia/gpu/d3d12/d3d12_render_target_cache.cc#L1033)).
-**It made things distinctly worse** - widespread texture flicker plus foliage
-showing through solid objects. So the depth-precision reading is not supported,
-and two of the three things ROV forces are ruled out. (That
-`depth_float24_convert_in_pixel_shader` degrades rendering on the new EDRAM
-addressing may be an upstream bug in its own right.)
+- The **black hero and dog textures** require the `Disable Texture Morphing`
+  game patch. Readback does not fix them.
+- The **foliage halo** was fixed by upstream's single-sample EDRAM addressing.
+- The remaining **dog artifact** is a vertex-mesh extrusion: a narrow triangle
+  stretches from the dog toward the ground and flickers under camera motion.
 
-What is actually known about this fault:
+The extrusion matches the
+[old femtofork's documented Fable II issue](https://github.com/just-harry/unofficial-xenia-femtofork-for-fable-ii#issues-not-solved). A
+[newer game-specific fork](https://github.com/SadTransGirl/xenia-canary-GummiFableII/blob/canary_experimental/CHANGES.md#fable-ii-fixes)
+skips the redundant draw using vertex shader `7C5710DEF3EE33C4`, and that
+shader is present in this repository's RenderDoc export. This fork therefore
+has a D3D12 workaround, `fable2_dog_mesh_fix`. Its global default remains off,
+but the control/candidate matrix passed and both Fable profiles enable it.
 
-- Present at 1x and 2x, with and without the per-frame sync.
-- `-ExactDepth24` makes it worse.
-- Before the merge, **ROV removed it** - the only setting that ever has.
+### The dog artifact and proven workaround
 
-The two remaining candidates, ROV itself and the last setting it forces, were
-then tested. **Both failed:**
-
-| Run | Result |
-|---|---|
-| `-RtPath rov` | **Halo is back**, heavy stutter, dog still flickers |
-| `-Cvar gamma_render_target_as_unorm16=false` | 28-41 FPS, halo gone, dog still flickers |
-
-The ROV result is worth flagging on its own. Before the merge, ROV was the only
-setting that removed the dog flicker and it left the halo alone; after the merge
-it does neither. **Upstream `437a7280c` appears to have improved the RTV path
-and regressed the ROV path.** That is reproducible and worth reporting upstream
-independently of this game.
-
-So all three ROV-forced settings are ruled out, ROV itself is no longer a
-reference for correct behaviour, and the cvar-guessing avenue is exhausted.
-
-### The remaining artifact, and where the investigation stopped
-
-What is left is a thin dark wedge, roughly two pixels wide, anchored to the
-dog's silhouette and extending down to the ground. Intermittent, worse under
-camera motion, purely cosmetic. Everything below was tested in-game and **does
-not fix it**:
+What is left is a thin dark wedge, roughly two pixels wide, extruded from the
+dog mesh toward the ground. It is intermittent, worse under camera motion, and
+purely cosmetic. Everything below was tested in-game and **does not fix it**:
 
 | Tried | Result |
 |---|---|
@@ -110,42 +89,69 @@ while the displayed image was glitched; RenderDoc serialises the frame it
 captures, which is the same class of change as `await_gpu_completion_per_frame`,
 so capturing may perturb the very bug being hunted.
 
-The artifact follows the dog's geometry, so it is produced by something that
-knows that geometry — most likely the shadow passes. `Depth-only Pass #8` (338
-draws into a 4×MSAA `kD24FS8` target) is the largest candidate.
+The earlier shadow/depth and trace-viewer render-target theory is now
+**superseded for this symptom**. Screenshots show geometry stretching from the
+dog, and the matching shader skip is a narrower, testable explanation. The
+RenderDoc chain above remains useful historical evidence for the final-image
+path, but it did not identify the producer of the extrusion.
 
-### Capturing a frame yourself
-
-Xenia's own trace viewer captures without RenderDoc's serialisation, which makes
-it the better tool here in principle — but its D3D12 render-target and texture
-hooks are unimplemented stubs (`GetColorRenderTarget`, `GetDepthRenderTarget`,
-`GetTextureEntry` all return 0), so it cannot show what a draw produced.
-Implementing them is the principled next step.
+The direct control/candidate matrix kept patches and other settings unchanged:
 
 ```powershell
-.\xb.ps1 build --config=release --cmake-define XENIA_BUILD_MISC=ON `
-    --cmake-define XENIA_ENABLE_TRACE_WRITER=ON `
-    --target xenia-gpu-d3d12-trace-viewer --target xenia-app
+# Mode A control / candidate
+.\fable2\run.ps1 -Mode A -Cvar fable2_dog_mesh_fix=false -Quiet "D:\Games\Fable II.iso"
+.\fable2\run.ps1 -Mode A -Cvar fable2_dog_mesh_fix=true  -Quiet "D:\Games\Fable II.iso"
+
+# Mode B control / candidate
+.\fable2\run.ps1 -Mode B -Cvar fable2_dog_mesh_fix=false -Quiet "D:\Games\Fable II.iso"
+.\fable2\run.ps1 -Mode B -Cvar fable2_dog_mesh_fix=true  -Quiet "D:\Games\Fable II.iso"
 ```
 
-Both defines are required. Without `XENIA_ENABLE_TRACE_WRITER` the writer is
-compiled out of release builds and **F4 silently does nothing**. The explicit
-targets matter too: `XENIA_BUILD_MISC` also enables
-`xenia-ui-window-vulkan-demo`, which does not link upstream and would fail the
-build.
+| Mode | Fix off | Fix on |
+|---|---|---|
+| A | extrusion present | extrusion absent, ~20 FPS |
+| B | extrusion present | extrusion absent, ~30 FPS |
 
-Traces land in **`scratch/gpu/`** relative to the working directory — not the
-storage root. Open one with
-`build/bin/Windows/Release/xenia-gpu-d3d12-trace-viewer.exe <path>.xtr`.
+No new dog-geometry defect or performance regression was reported. The Fable
+profiles now enable the workaround; `-Cvar fable2_dog_mesh_fix=false` is the
+rollback.
 
-For RenderDoc instead, `fable2/capture.ps1` launches the emulator under it with
-the right arguments; capture with **F12**.
+### Periodic-stutter remediation
+
+After the rendering fixes, both modes showed a micro-stutter roughly every
+4–5 seconds even while standing still. At the start of this investigation,
+local `HEAD` and `origin/fable2-custom` were identical at `7a3564620`, ruling
+out an unpushed Claude runtime-source delta.
+
+Two hidden build/runtime facts remained:
+
+- Claude's build directory cached `XENIA_ENABLE_TRACE_WRITER=ON`. The executable
+  was optimized Release, but unused F4 trace hooks were compiled into hot GPU
+  paths. Clean Release builds now compile the internal writer out. F12
+  screenshots and RenderDoc capture are unaffected; F4 is the separate
+  Debug-only internal GPU trace.
+- The log queued 532 cached pipeline descriptions, including 258 translations,
+  on up to seven workers and launched the guest immediately despite the Fable
+  profiles using `async_shader_compilation=false`. The old `0 ms` result only
+  measured queueing.
+
+This fork adds the general GPU cvar
+`shader_storage_initialization_blocking` (default false). Both Fable profiles
+set it true, keeping the initialization indicator active until warmed pipeline
+work completes and logging the actual completion time before guest launch.
+A/B/C rendering semantics do not change.
+
+The implementation still needs controlled UAT against the preserved
+trace-enabled build and the clean non-blocking build. Before testing, free at
+least 20 GB on `C:` while preserving the ISO, saves, and warmed cache. See the
+[three-boundary matrix, metrics, acceptance criteria, and evidence-gated
+fallbacks](fable2/UAT_RESULTS.md#periodic-stutter-remediation-uat).
 
 The `await_gpu_completion_per_frame` cvar stays in the tree because it is
 general and was genuinely the fix before this merge. Everything below documents
 how that pre-merge conclusion was reached, and remains accurate for that tree.
 
-## The headline finding
+## The headline finding (pre-merge, historical)
 
 **Fable II needs one CPU-GPU synchronization per frame.**
 
@@ -301,20 +307,37 @@ spends another session on them.
 | **Texture-cache shared-memory fallback** | Not involved. `log_unscaled_resolve_textures` reported nothing — no texture was being read from shared memory instead of the scaled resolve buffer. |
 | **Selective readback by resolve signature** | The femtofork signature never matches, and readback does not fix the morph textures at all. Deleted. |
 
-Untried and now unnecessary, but the right tools if a *new* rendering fault
-appears: `gamma_render_target_as_unorm16 = false`,
+Untried and now unnecessary for the historical halo investigation:
+`gamma_render_target_as_unorm16 = false`,
 `mrt_edram_used_range_clamp_to_min = false`,
 `depth_float24_convert_in_pixel_shader`, and a
-`xenia-gpu-d3d12-trace-viewer` capture (build with `-DXENIA_BUILD_MISC=ON`,
-capture with **F4**). The trace viewer would likely have identified this in one
-capture and is the first thing to reach for next time.
+`xenia-gpu-d3d12-trace-viewer` capture (build Debug with
+`-DXENIA_BUILD_MISC=ON`, capture with **F4**). These are not the next step for
+the dog-mesh extrusion.
 
 ---
 
 ## What this fork changes in the emulator
 
-Everything here is **general** — none of it is title-specific, and there is no
-Fable-specific code anywhere in `src/xenia/gpu`.
+Most changes below are general. The dog-mesh workaround is the sole
+title-specific exception; its global default is off and the Fable profiles
+enable it.
+
+### `fable2_dog_mesh_fix` (D3D12 bool, default off)
+
+For title `4D5307F1` only, skips the redundant draw whose vertex shader hash is
+`7C5710DEF3EE33C4`. This is an opt-in workaround for the dog mesh extrusion;
+it does not affect the morph-texture or foliage-halo fixes. The first skipped
+draw is logged. The A/B matrix passed, so both Fable profiles set this true;
+the cvar remains available for rollback.
+
+### `shader_storage_initialization_blocking` (GPU bool, default off)
+
+Controls whether persistent shader and pipeline-cache initialization runs in
+the background or completes before guest module launch. Both modes retain the
+same completion callback and log actual elapsed time. Canary's background
+behavior remains the global default; both Fable profiles enable blocking
+startup so cached pipeline workers do not overlap gameplay.
 
 ### `await_gpu_completion_per_frame` (bool, default off)
 
@@ -384,9 +407,14 @@ The `fable2/` directory is a self-contained profile, launcher and patch bundle.
 See [fable2/README.md](fable2/README.md) for full detail.
 
 ```powershell
-.\xb.ps1 build --config=release
+.\xb.ps1 build --config=release --force `
+  --cmake-define XENIA_BUILD_MISC=OFF --target xenia-app
 .\fable2\run.ps1 -Mode B "D:\Games\Fable II.iso"   # recommended
 ```
+
+This clean Release path intentionally compiles out Xenia's F4 internal GPU
+trace writer. F12 screenshots and `fable2/capture.ps1` RenderDoc capture remain
+available.
 
 If a build has to recompile the SPIR-V shaders, `VULKAN_SDK` must point at a
 Vulkan SDK **even when you only run D3D12** — otherwise the shader step fails
@@ -397,13 +425,16 @@ $env:VULKAN_SDK = "C:\VulkanSDK\<version>"
 ```
 
 `-Mode B` is 1x with FSR upscaling, not a plain resolution drop. `-Mode A` is 2x
-with CAS if you prefer the image to the frame rate.
+with CAS if you prefer the image to the frame rate. `-Mode C` is Mode A plus a
+readback-range preset; that range is inert unless `-Readback fast` or
+`-Readback full` is also supplied.
 
 The launcher exposes every experiment as a switch so a run is reproducible from
 one command line, and prints a run manifest of the overrides it used:
 `-Readback`, `-ReadbackRange`, `-SyncPerFrame`, `-FramesInFlight`,
 `-Sharpening`, `-RtPath`, `-GammaAsUnorm16`, `-LogResolves`,
-`-LogUnscaledTextures`, `-LogLevel`, `-Quiet`.
+`-LogUnscaledTextures`, `-LogLevel`, `-Quiet`, and arbitrary cvars through
+`-Cvar name=value`.
 
 **Always use `-Quiet` for measured runs.** Xenia's stdout logging is
 synchronous, and the game emits per-file I/O lines during play.
@@ -413,7 +444,8 @@ synchronous, and the game emits per-file I/O lines during play.
 `fable2/patches/` carries the community patch bundle (600p, intro skip, 60 FPS,
 High Tick Rate, Disable Texture Morphing, Disable MSAA, and content unlocks).
 `fable2/patch-preset.ps1` toggles the render-config patches by name for
-bisecting.
+bisecting. `-Fps60 on|off` and `-HighTick on|off` independently control those
+timing patches for evidence-gated frame-pacing tests.
 
 **`Disable Texture Morphing` is load-bearing** — it is what fixes the black hero
 and dog textures. Readback does not, at any setting. Keep it enabled.
@@ -424,31 +456,31 @@ and dog textures. Readback does not, at any setting. Keep it enabled.
 
 Ranked by expected value to anyone continuing this.
 
-1. **The underlying race is unidentified.** A per-frame GPU idle fixing a
-   *rendering* fault means something is missing a synchronization — most likely
-   in the RTV render target or texture path. Forcing an idle papers over it. It
-   is a cheap and legitimate workaround, but finding the actual missing barrier
-   would cost nothing at runtime and might fix other titles. Start with a
-   trace-viewer capture.
+1. **Does blocking persistent-pipeline initialization remove the periodic
+   stutter?** The implementation is complete, but the preserved trace-enabled,
+   clean non-blocking, and clean blocking boundaries still need alternating
+   warmed UAT. Use WPR to choose a fallback only if blocking misses the stated
+   acceptance threshold.
 
-2. **Is `gpu_frames_in_flight = 1` enough?** Untested. If waiting for the
+2. **Is `gpu_frames_in_flight = 1` useful elsewhere?** Untested. If waiting for the
    previous frame buys the same correctness as a full idle, it should recover a
-   few FPS — which matters, because 1x currently dips below 30.
+   few FPS in titles that still need the synchronization workaround. Fable II
+   no longer needs it after the EDRAM merge.
 
-3. **The format aliasing is still unexplained.** `0x12CAB000`, `0x12D41000` and
-   `0x12AE9000` are each resolved as both `k_8_8_8_8` and `k_2_10_10_10`. ROV
-   handles it, RTV does not, and that is the best explanation for the residual
-   flicker. Worth fixing properly in the RTV path.
+3. **The post-merge ROV regression is still unexplained.** ROV removed the dog
+   extrusion before `437a7280c`; afterward it reintroduces the foliage halo and
+   no longer removes the extrusion. This is separate from the D3D12 RTV
+   workaround and may be worth reporting upstream.
 
 4. **The morph textures.** Still black without the `Disable Texture Morphing`
    patch, and readback is definitively not the answer. Nobody has yet found what
    the real mechanism is. The patch also leaves makeup bugged, so a real fix has
    user-visible value.
 
-5. **Untested performance levers:** the 60 FPS patch at ~30 FPS (it was enabled
-   before any measurement existed and may hurt frame pacing),
-   `texture_cache_memory_limit_hard = 512` (VRAM sat at 4.8 of 6 GB with
-   0.2 GB spilled), and `async_shader_compilation` on a warm cache.
+5. **Other performance levers remain evidence-gated.** Logging flushes,
+   asynchronous PSO creation, ISO page faults, guest pacing, shared-memory
+   reuploads, and XMA each have a one-axis diagnostic in the UAT record. Do not
+   combine them or promote one without a matching WPR correlation.
 
 ---
 

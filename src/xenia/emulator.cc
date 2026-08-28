@@ -36,6 +36,7 @@
 #include "xenia/cpu/cpu_flags.h"
 #include "xenia/cpu/thread_state.h"
 #include "xenia/gpu/command_processor.h"
+#include "xenia/gpu/gpu_flags.h"
 #include "xenia/gpu/graphics_system.h"
 #include "xenia/hid/input_driver.h"
 #include "xenia/hid/input_system.h"
@@ -1797,16 +1798,23 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
     }
   }
 
-  // Initialize shader storage asynchronously - pipeline compilation happens in
-  // background while the game goes through its normal startup (loading screens,
-  // intro videos, etc.). With async_shader_compilation enabled, draws are
-  // skipped until pipelines are ready, so this is safe. By the time actual
-  // gameplay starts, most cached pipelines should be compiled.
   if (graphics_system_) {
+    const bool blocking = cvars::shader_storage_initialization_blocking;
+    const uint64_t initialization_start = xe::Clock::QueryHostTickCount();
+    XELOGI("Shader storage initialization started in {} mode",
+           blocking ? "blocking" : "background");
     on_shader_storage_initialization(true);
     graphics_system_->InitializeShaderStorage(
-        cache_root_, title_id_.value(), false,
-        [this]() { on_shader_storage_initialization(false); });
+        cache_root_, title_id_.value(), blocking,
+        [this, blocking, initialization_start]() {
+          on_shader_storage_initialization(false);
+          XELOGI(
+              "Shader storage initialization completed in {} milliseconds "
+              "({} mode)",
+              (xe::Clock::QueryHostTickCount() - initialization_start) * 1000 /
+                  xe::Clock::QueryHostTickFrequency(),
+              blocking ? "blocking" : "background");
+        });
   }
 
   auto main_thread = kernel_state_->LaunchModule(module);
