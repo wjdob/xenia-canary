@@ -141,10 +141,13 @@ set it true, keeping the initialization indicator active until warmed pipeline
 work completes and logging the actual completion time before guest launch.
 A/B/C rendering semantics do not change.
 
-The implementation still needs controlled UAT against the preserved
-trace-enabled build and the clean non-blocking build. Before testing, free at
-least 20 GB on `C:` while preserving the ISO, saves, and warmed cache. See the
-[three-boundary matrix, metrics, acceptance criteria, and evidence-gated
+Preliminary Mode B UAT favors blocking initialization: both clean configurations
+ran at roughly 35–50 FPS, but the non-blocking run dipped into the 20s more
+often. This is subjective rather than formal acceptance; the preserved
+trace-enabled boundary, timed alternating passes, and cadence/hitch metrics
+remain open. Before testing, free at least 20 GB on `C:` while preserving the
+ISO, saves, and warmed cache. See the [three-boundary matrix, metrics,
+acceptance criteria, and evidence-gated
 fallbacks](fable2/UAT_RESULTS.md#periodic-stutter-remediation-uat).
 
 The `await_gpu_completion_per_frame` cvar stays in the tree because it is
